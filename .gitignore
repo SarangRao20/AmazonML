@@ -52,7 +52,8 @@ Thumbs.db
 dataset/
 
 # Reference projects (DO NOT PUSH)
-code/business_entity_resolution/src/
+# NOTE: code/business_entity_resolution/src/ is our own submission code and
+# must be tracked. Reference material lives in references/ (submodules).
 *.pdf
 
 # Model outputs

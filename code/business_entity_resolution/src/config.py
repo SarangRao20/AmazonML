@@ -10,7 +10,26 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 # ==================== DATASET PATHS ====================
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+def _find_project_root() -> Path:
+    """Locate the repo root by walking up until a ``dataset/`` dir appears.
+
+    Robust to this file being moved between ``code/business_entity_resolution/``
+    and ``code/business_entity_resolution/src/``. Override with the
+    ``AMZ_ML_ROOT`` environment variable if the layout ever changes.
+    """
+    override = os.environ.get("AMZ_ML_ROOT")
+    if override:
+        return Path(override).resolve()
+
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        if (candidate / "dataset").is_dir():
+            return candidate
+    # Fall back to three levels up (repo root in the documented layout).
+    return here.parents[2]
+
+
+PROJECT_ROOT = _find_project_root()
 DATA_DIR = PROJECT_ROOT / "dataset"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MODELS_DIR = PROJECT_ROOT / "models"
@@ -199,12 +218,19 @@ FEATURE_NAMES_PHASE2_NEW = [
     "channel_confidence",
 ]
 
-# Full Phase 2 feature set
-FEATURE_NAMES = FEATURE_NAMES_PHASE1 + FEATURE_NAMES_PHASE2_NEW
+# Character n-gram features (added alongside the reference-inspired blocking work)
+FEATURE_NAMES_PHASE3_NGRAM = [
+    "name_char3_jaccard",
+    "addr_char3_jaccard",
+]
+
+# Full feature set
+FEATURE_NAMES = FEATURE_NAMES_PHASE1 + FEATURE_NAMES_PHASE2_NEW + FEATURE_NAMES_PHASE3_NGRAM
 
 NUM_FEATURES = len(FEATURE_NAMES)
 NUM_FEATURES_PHASE1 = len(FEATURE_NAMES_PHASE1)
-NUM_FEATURES_PHASE2 = len(FEATURE_NAMES)
+NUM_FEATURES_PHASE2 = len(FEATURE_NAMES_PHASE1) + len(FEATURE_NAMES_PHASE2_NEW)
+NUM_FEATURES_NGRAM = len(FEATURE_NAMES_PHASE3_NGRAM)
 
 # Phase 2 breakdown
 NUM_FEATURES_LEGAL_SUFFIX = 2
@@ -215,7 +241,7 @@ NUM_FEATURES_MULTICHANNEL = 19  # Task 4
 NUM_FEATURES_PHASE2_NEW_TOTAL = NUM_FEATURES_LEGAL_SUFFIX + NUM_FEATURES_COMPOSITE + NUM_FEATURES_POSTAL + NUM_FEATURES_LANDMARK + NUM_FEATURES_MULTICHANNEL
 
 assert NUM_FEATURES_PHASE2_NEW_TOTAL == 34, f"Expected 34 Phase 2 new features, got {NUM_FEATURES_PHASE2_NEW_TOTAL}"
-assert NUM_FEATURES == 51, f"Expected 51 total features (17 + 34), got {NUM_FEATURES}"
+assert NUM_FEATURES == 53, f"Expected 53 total features (17 + 34 + 2 n-gram), got {NUM_FEATURES}"
 
 # ==================== PHASE 2 CONFIGURATION ====================
 # Phase selection (1 = 17 features, 2 = 55 features)
