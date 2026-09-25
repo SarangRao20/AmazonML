@@ -1,0 +1,42 @@
+[submodule "references/reference_projects"]
+	path = references/reference_projects
+	url = https://github.com/ChandrimaNandi/Amazon-ML-Hackathon-2026.git
+[submodule "references/reference_projects_2"]
+	path = references/reference_projects_2
+	url = https://github.com/Ankittian/amazon_2026_toolkit.git
+[submodule "references/reference_projects_3"]
+	path = references/reference_projects_3
+	url = https://github.com/imMohammedSahil/Amazon-ML.git
+[submodule "references/reference_projects_4"]
+	path = references/reference_projects_4
+	url = https://github.com/Aamod007/Amazon-ML-Challenge-2026-Business-Entity-Resolution.git
+[submodule "references/reference_projects_5"]
+	path = references/reference_projects_5
+	url = https://github.com/ItsDemonic/amazon-business-entity-resolution-challenge.git
+[submodule "references/reference_projects_6"]
+	path = references/reference_projects_6
+	url = https://github.com/Ayush121511/amazon-ml-challenge.git
+[submodule "references/reference_projects_7"]
+	path = references/reference_projects_7
+	url = https://github.com/SIBAM890/Business-Entity-Resolution-Amazon-Ml-Challenge-2026.git
+[submodule "references/reference_projects_8"]
+	path = references/reference_projects_8
+	url = https://github.com/YoonieJ/amazon-ml-challenge-the-resolvers.git
+[submodule "references/reference_projects_9"]
+	path = references/reference_projects_9
+	url = https://github.com/vitthalg17/amazon-ml-challenge-2026-entity-resolution.git
+[submodule "references/reference_projects_10"]
+	path = references/reference_projects_10
+	url = https://github.com/dnyan-codes/amazon-ml-business-entity-resolution.git
+[submodule "references/reference_projects_11"]
+	path = references/reference_projects_11
+	url = https://github.com/bhushan-ssh/amazon_ml_challenge.git
+[submodule "references/reference_projects_12"]
+	path = references/reference_projects_12
+	url = https://github.com/memehdi14/AmazonMLChallenge.git
+[submodule "references/reference_projects_13"]
+	path = references/reference_projects_13
+	url = https://github.com/priyanshusharan-cmd/business-entity-link.git
+[submodule "references/reference_projects_14"]
+	path = references/reference_projects_14
+	url = https://github.com/SaikatxAlpha/AWS-ML-Business-Entity-Resolution-Challenge.git
