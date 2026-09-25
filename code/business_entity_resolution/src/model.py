@@ -104,7 +104,6 @@ class TriEnsembleModel:
         model = xgb.XGBClassifier(
             **XGBOOST_PARAMS,
             scale_pos_weight=scale_weight,
-            random_state=RANDOM_SEED,
             early_stopping_rounds=EARLY_STOPPING_ROUNDS,
         )
         
@@ -142,7 +141,6 @@ class TriEnsembleModel:
         model = lgb.LGBMClassifier(
             **LIGHTGBM_PARAMS,
             scale_pos_weight=scale_weight,
-            random_state=RANDOM_SEED,
         )
         
         # Train with early stopping
@@ -182,7 +180,6 @@ class TriEnsembleModel:
         model = CatBoostClassifier(
             **CATBOOST_PARAMS,
             scale_pos_weight=scale_weight,
-            random_state=RANDOM_SEED,
         )
         
         # Train
@@ -310,15 +307,18 @@ class TriEnsembleModel:
                 ENSEMBLE_WEIGHTS['catboost'] * catboost_pred_calib
             )
             
-            # Store fold results
+            # Store fold results. Carry the original feature-row index so the
+            # caller can realign OOF predictions with the feature matrix:
+            # pd.concat below yields fold order, not input order.
             fold_oof = pd.DataFrame({
+                'row_index': X_val.index.to_numpy(),
                 'fold': [fold_idx] * len(X_val),
                 'xgb_prob': xgb_pred_calib,
                 'lgb_prob': lgb_pred_calib,
                 'catboost_prob': catboost_pred_calib,
                 'blend_prob': blend_pred,
                 'true_label': y_val,
-            })
+            }, index=X_val.index)
             
             oof_predictions = pd.concat([oof_predictions, fold_oof], ignore_index=True)
             
