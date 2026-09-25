@@ -50,3 +50,12 @@ temp_*.csv
 .DS_Store
 Thumbs.db
 dataset/
+
+# Reference projects (DO NOT PUSH)
+code/business_entity_resolution/src/
+*.pdf
+
+# Model outputs
+models/
+output/
+*.tsv
