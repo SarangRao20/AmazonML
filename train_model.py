@@ -140,7 +140,11 @@ def main() -> int:
         s1_by_country.setdefault(country, {})[eid] = (nm, ad)
     log(f"S1 sample by country: "
         f"{ {k: len(v) for k, v in sorted(s1_by_country.items())} }")
-    log(f"pool available: {s2.height + s3.height:,} rows across "
+    # len(), not .height: the loader hands back pandas frames, and .height is
+    # a Polars attribute. This only surfaced on the first real Colab run
+    # because the eager-pool version it replaced logged len() instead, and
+    # the lazy-pool rewrite was never executed locally.
+    log(f"pool available: {len(s2) + len(s3):,} rows across "
         f"{sorted(set(s2['country'].unique()) | set(s3['country'].unique()))}")
 
     # One country's pool at a time. Holding all 10.32M pool records as
