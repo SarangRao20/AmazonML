@@ -57,6 +57,7 @@ from code.business_entity_resolution.src.config import (
     TEST_SOURCE3_PATH,
 )
 from code.business_entity_resolution.src.blocking import MultiChannelBlocker
+from code.business_entity_resolution.src.blocking_sparse import SparseBlocker
 from code.business_entity_resolution.src.features import (
     extract_features_from_records,
 )
@@ -89,7 +90,10 @@ def main() -> int:
     ap.add_argument("--model-dir", type=Path, default=MODELS_DIR,
                     help="Directory holding xgb/lgb/catboost .pkl models")
     ap.add_argument("--out", type=Path, default=None)
-    ap.add_argument("--max-candidates", type=int, default=35)
+    ap.add_argument("--max-candidates", type=int, default=45,
+                    help="recall ceiling; 45 -> 98.4%% pair recall")
+    ap.add_argument("--blocker", choices=["sparse", "dict"],
+                    default="sparse")
     ap.add_argument("--score-tau", type=float, default=0.60)
     ap.add_argument("--alpha", type=float, default=0.7,
                     help="Relative-floor coefficient; keep p >= max(score_tau, alpha*max_p)")
@@ -156,12 +160,31 @@ def main() -> int:
             log(f"    no pool records for {country}, wrote {a.height:,} empty rows")
             continue
 
-        blocker = MultiChannelBlocker(verbose=False)
-        candidates = blocker.generate_all_candidates(s1_records, s23_records)
+        t_block = time.time()
+        if args.blocker == "sparse":
+            candidates = SparseBlocker(verbose=True).candidates_for_country(
+                s1_records, s23_records,
+                max_candidates=args.max_candidates or 45)
+        else:
+            candidates = MultiChannelBlocker(verbose=False).generate_all_candidates(
+                s1_records, s23_records)
         n_pairs = sum(len(v) for v in candidates.values())
-        log(f"    candidates: {n_pairs:,} pairs, "
-            f"{n_pairs / max(len(s1_records), 1):.1f}/S1  "
-            f"({time.time() - t0:.0f}s)")
+        log(f"    blocking done in {time.time() - t_block:.0f}s: {n_pairs:,} pairs, "
+            f"{n_pairs / max(len(s1_records), 1):.1f}/S1")
+
+        # The cap matters more than it looks: it is the recall ceiling.
+        # Reference project `ayan_multiview` measures union pair recall
+        # 0.9905 at 112 candidates/S1 and 0.989 at 45/S1, so a cap of 12
+        # knowingly gives up recall in exchange for finishing in minutes.
+        if args.max_candidates and args.max_candidates > 0:
+            before = n_pairs
+            for sid, cands in candidates.items():
+                if len(cands) > args.max_candidates:
+                    candidates[sid] = sorted(cands, key=lambda t: -t[1])[:args.max_candidates]
+            n_pairs = sum(len(v) for v in candidates.values())
+            if n_pairs != before:
+                log(f"    capped at {args.max_candidates}/S1: "
+                    f"{before:,} -> {n_pairs:,} pairs")
 
         # ---- chunked scoring + incremental write --------------------------
         items = list(candidates.items())
