@@ -65,3 +65,6 @@ output/
 logs/
 catboost_info/
 *.watchdog
+
+# Reference repos live as submodules on the testing branch only
+references/
