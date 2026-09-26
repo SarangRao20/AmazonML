@@ -59,6 +59,11 @@ VAL_GROUND_TRUTH_PATH = DATA_DIR / "val_sample" / "sample_ground_truth.tsv"
 MATCHING_RESULTS_PATH = OUTPUT_DIR / "matching_results.tsv"
 CANDIDATE_PAIRS_PATH = OUTPUT_DIR / "candidate_pairs.tsv"
 
+# Cache for out-of-fold predictions. Threshold and decision-rule tuning only
+# needs these, so keeping them lets rule experiments skip the ~8 minutes of
+# 5-fold ensemble retraining.
+OOF_CACHE = MODELS_DIR / "oof_predictions.pkl"
+
 # Model checkpoint paths
 MODELS = {
     "xgboost": MODELS_DIR / "xgboost_model.pkl",

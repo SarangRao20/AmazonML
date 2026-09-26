@@ -14,6 +14,7 @@ End-to-end entity resolution pipeline orchestrator.
 Expected output: F₀.₅ ≥ 95% (Phase 1 complete)
 """
 
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -24,7 +25,7 @@ import numpy as np
 
 from .config import (
     VERBOSE, USE_VAL_SAMPLE, MATCHING_RESULTS_PATH, CANDIDATE_PAIRS_PATH,
-    TRAIN_VAL_SPLIT_RATIO, RANDOM_SEED, F_BETA
+    TRAIN_VAL_SPLIT_RATIO, RANDOM_SEED, F_BETA, OOF_CACHE
 )
 from .data_loader import DataLoader
 from .blocking import MultiChannelBlocker
@@ -32,6 +33,7 @@ from .features import extract_features_from_candidates
 from .model import TriEnsembleModel
 from .threshold_optimizer import ThresholdOptimizer
 from .threshold_optimizer_fast import VectorizedThresholdOptimizer
+from .decision_rule import DecisionRuleOptimizer
 from .consistency import ConsistencyResolver, resolve_predictions
 from .evaluate import evaluate_predictions
 
@@ -49,6 +51,8 @@ class EntityResolutionPipeline:
         self.model = TriEnsembleModel(verbose=verbose)
         self.threshold_opt = ThresholdOptimizer(verbose=verbose)
         self.threshold_opt_fast = VectorizedThresholdOptimizer(beta=F_BETA)
+        self.decision_opt = DecisionRuleOptimizer(beta=F_BETA)
+        self.decision_breakdown = {}
         
         # Data containers
         self.s1_df = None
@@ -172,10 +176,41 @@ class EntityResolutionPipeline:
         y = self.features_df['label'].values
         
         self.trained_models, self.oof_predictions = self.model.train_groupkfold(X, y, groups)
-        
+
+        # Cache OOF predictions so threshold/rule experiments never require
+        # retraining (which costs ~8 minutes for the 5-fold ensemble).
+        self._cache_oof()
+
         if self.verbose:
             print(f"\n✓ Cross-validation complete!")
             print(f"  OOF predictions: {len(self.oof_predictions):,} pairs")
+
+    def _cache_oof(self) -> None:
+        """Persist everything stage 6 and the diagnostics need.
+
+        The pair keys (s1_id, s2_s3_id) must be cached alongside the OOF
+        probabilities, because the two are only related positionally through
+        ``features_df.index`` — they are NOT in the same order as the
+        blocking candidate lists, whose scores are descending. Reconstructing
+        the mapping by position silently pairs candidates with the wrong
+        probabilities.
+        """
+        try:
+            OOF_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "oof": self.oof_predictions,
+                "features_index": self.features_df.index.to_numpy(),
+                "s1_id": self.features_df["s1_id"].to_numpy(),
+                "s2_s3_id": self.features_df["s2_s3_id"].to_numpy(),
+                "gt_dict": self.gt_dict,
+            }
+            with open(OOF_CACHE, "wb") as fh:
+                pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            if self.verbose:
+                print(f"  cached OOF predictions -> {OOF_CACHE}")
+        except Exception as exc:  # caching is best-effort, never fatal
+            if self.verbose:
+                print(f"  (could not cache OOF predictions: {exc})")
     
     def stage_6_threshold_optimization(self):
         """Stage 6: Threshold optimization on macro F₀.₅."""
@@ -191,31 +226,74 @@ class EntityResolutionPipeline:
                 print("   No OOF candidates found; using default thresholds")
             self.best_score_tau = 0.5
             self.best_margin_tau = 0.2
+            self.best_rule = "threshold"
+            self.best_alpha = None
+            self.best_shift = None
             self.best_f_beta = 0.0
             self.top_thresholds = []
             return
 
-        # Vectorised grid search: numerically identical to the reference
-        # implementation (see tests/test_threshold_equivalence.py) but ~30x
-        # faster, which matters because the grid is O(pairs) per point.
+        # Search all three decision rules and keep the best. F_0.5 weights
+        # precision twice as heavily as recall (losing 10pts of recall costs
+        # ~2.2 F_0.5, losing 10pts of precision costs ~8.2), so a flat global
+        # threshold leaves score on the table: it cannot distinguish an
+        # entity whose candidates are all strongly positive from one where a
+        # single strong candidate is surrounded by junk.
         t0 = time.time()
-        score_tau, margin_tau, f_beta, top = self.threshold_opt_fast.grid_search(
-            probabilities_by_s1, self.gt_dict
+        outcome = self.decision_opt.grid_search(
+            probabilities_by_s1, self.gt_dict, verbose=False
         )
-        self.best_score_tau = score_tau
-        self.best_margin_tau = margin_tau
-        self.best_f_beta = f_beta
-        self.top_thresholds = top
+        best = outcome["best"]
+        self.top_thresholds = outcome["top"]
+        self.best_rule = best["rule"]
+        self.best_score_tau = best["score_tau"]
+        self.best_margin_tau = best["margin_tau"]
+        self.best_alpha = best["alpha"]
+        self.best_shift = best["shift"]
+        self.best_f_beta = best["macro_f_beta"]
 
         if self.verbose:
-            print(f"\n   Grid search completed in {time.time() - t0:.1f}s")
-            print(f"   Best score threshold : {score_tau:.4f}")
-            print(f"   Best margin threshold: {margin_tau:.4f}")
-            print(f"   Best macro F₀.₅       : {f_beta * 100:.4f}%")
-            print(f"\n   Top 5 combinations:")
-            for row in top[:5]:
-                print(f"     score={row['score_threshold']:.2f} "
-                      f"margin={row['margin_threshold']:.2f} "
+            print(f"\n   Decision rule search completed in {time.time() - t0:.1f}s")
+            print(f"   Winning rule : {best['rule']}")
+            print(f"     score_tau  : {best['score_tau']}")
+            print(f"     margin_tau : {best['margin_tau']}")
+            print(f"     alpha      : {best['alpha']}")
+            print(f"     shift      : {best['shift']}")
+            print(f"   Macro F₀.₅    : {best['macro_f_beta'] * 100:.4f}%")
+
+            # Re-derive precision/recall at the winning configuration so the
+            # headline number can be attributed to one of the two failure
+            # modes: the model discarding true matches, or blocking never
+            # retrieving them.
+            idx = outcome["index"]
+            kw = {"score_tau": best["score_tau"]}
+            if best["rule"] == "threshold":
+                kw["margin_tau"] = best["margin_tau"]
+            elif best["rule"] == "relative":
+                kw.update(alpha=best["alpha"], margin_tau=best["margin_tau"])
+            else:
+                kw["shift"] = best["shift"]
+            if best["rule"] == "expected":
+                kept, _ = self.decision_opt.expected_topk(
+                    idx, best["shift"], best["score_tau"])
+            elif best["rule"] == "relative":
+                kept = self.decision_opt.kept_for_relative(
+                    idx, best["score_tau"], best["alpha"], best["margin_tau"])
+            else:
+                kept = self.decision_opt.kept_for_threshold(
+                    idx, best["score_tau"], best["margin_tau"])
+            self.decision_breakdown = idx.breakdown(kept, idx._true_positives_for(kept))
+            print(f"\n   Attribution at the winning configuration:")
+            print(f"     macro precision : {self.decision_breakdown['macro_precision'] * 100:.3f}%")
+            print(f"     macro recall    : {self.decision_breakdown['macro_recall'] * 100:.3f}%")
+            print(f"     mean kept/S1    : {self.decision_breakdown['mean_kept']:.2f}")
+            print(f"     S1 with no match: {self.decision_breakdown['entities_with_no_prediction']:,}")
+            print(f"\n   Top 8 configurations:")
+            for row in outcome["top"][:8]:
+                print(f"     {row['rule']:9} score={row['score_tau']:.2f} "
+                      f"margin={row['margin_tau'] if row['margin_tau'] is not None else '-'} "
+                      f"alpha={row['alpha'] if row['alpha'] is not None else '-'} "
+                      f"shift={row['shift'] if row['shift'] is not None else '-'} "
                       f"F₀.₅={row['macro_f_beta'] * 100:.4f}%")
 
     def _build_probabilities_by_s1(self) -> Dict[str, List[Tuple[str, float]]]:
