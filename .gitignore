@@ -68,3 +68,8 @@ catboost_info/
 
 # Reference repos live as submodules on the testing branch only
 references/
+
+# Reference project clones: fetched, read, never tracked.
+# They are separate git repositories; adding them creates embedded-repo
+# entries in this index and nothing useful in a clone of this repo.
+references2/
