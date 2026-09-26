@@ -60,3 +60,8 @@ dataset/
 models/
 output/
 *.tsv
+
+# Run artefacts
+logs/
+catboost_info/
+*.watchdog

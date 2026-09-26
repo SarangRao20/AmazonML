@@ -769,6 +769,40 @@ class FeatureExtractor:
         return df
 
 
+def extract_features_from_records(candidates_by_s1: Dict[str, List[Tuple[str, float]]],
+                                 s1_records: Dict[str, Dict],
+                                 s23_records: Dict[str, Dict],
+                                 phase: int = 2,
+                                 channel_ranks_dict: Optional[Dict[Tuple[str, str], Dict[str, int]]] = None,
+                                 verbose: bool = True) -> pd.DataFrame:
+    """Feature extraction from already-materialised record dicts.
+
+    ``extract_features_from_candidates`` takes DataFrames and rebuilds the
+    record dicts with ``iterrows`` on every call. That is wasteful when
+    scoring in chunks, because the same source records are re-converted for
+    every chunk. This variant takes the dicts directly so the caller can
+    normalise each record once and reuse it across chunks.
+    """
+    pairs = []
+    for s1_id, candidates in candidates_by_s1.items():
+        s1_rec = s1_records.get(s1_id)
+        if s1_rec is None:
+            continue
+        for s2_s3_id, score in candidates:
+            if s2_s3_id in s23_records:
+                pairs.append((s1_id, s2_s3_id))
+
+    if not pairs:
+        return pd.DataFrame(columns=list(FEATURE_NAMES) + ["s1_id", "s2_s3_id"])
+
+    extractor = FeatureExtractor(verbose=verbose)
+    features_df = extractor.extract_features_batch(
+        pairs, s1_records, s23_records,
+        phase=phase, channel_ranks_dict=channel_ranks_dict,
+    )
+    return features_df
+
+
 def extract_features_from_candidates(candidates_by_s1: Dict[str, List[Tuple[str, float]]],
                                      s1_df: pd.DataFrame, s2_df: pd.DataFrame,
                                      s3_df: pd.DataFrame, phase: int = 2,

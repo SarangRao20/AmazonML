@@ -47,38 +47,28 @@ from code.business_entity_resolution.src.decision_rule import EntityIndex
 
 
 def build_probabilities(payload) -> dict:
-    """Regroup OOF probabilities by S1 entity, ranked descending.
+    """Return the S1 -> [(candidate, prob)] grouping from the cache.
 
-    The join is on the cached row index, which is what ties an OOF row back
-    to its (s1_id, s2_s3_id) pair. Blocking score order is irrelevant here;
-    the candidates are re-sorted by model probability instead.
+    Prefers the grouping the training run already computed, because that is
+    the one produced by ``pairing.build_probabilities_by_s1`` after realigning
+    on ``row_index``. Re-deriving the join here is how the first version of
+    this script ended up reporting 18% instead of 96%: the OOF frame is in
+    fold order, so a positional zip against the feature arrays pairs every
+    candidate with another entity's probability.
     """
+    if "probabilities_by_s1" in payload:
+        return payload["probabilities_by_s1"]
+
     oof = payload["oof"]
     if "row_index" not in oof.columns:
         raise SystemExit(
-            "OOF cache has no 'row_index' column, so predictions cannot be "
-            "joined back to their candidate pairs. Re-run the pipeline.")
-
-    idx = oof["row_index"].to_numpy()
-    blend = oof["blend_prob"].to_numpy()
-    s1_keys = payload["s1_id"]
-    s2s3_keys = payload["s2_s3_id"]
-
-    # (s1_id, s2_s3_id) -> blended probability
-    prob_lookup = {}
-    for row, p in zip(idx, blend):
-        prob_lookup[(s1_keys[row], s2s3_keys[row])] = float(p)
-
-    by_entity = defaultdict(list)
-    for (s1_id, cand_id), p in prob_lookup.items():
-        by_entity[s1_id].append((cand_id, p))
-
-    # Rank by model probability, descending. Ties broken by candidate id so
-    # the ordering is deterministic.
-    return {
-        s1_id: sorted(cands, key=lambda t: (-t[1], t[0]))
-        for s1_id, cands in by_entity.items()
-    }
+            "Cache has neither 'probabilities_by_s1' nor an 'row_index' "
+            "column, so predictions cannot be joined to their candidates. "
+            "Re-run train_model.py.")
+    from code.business_entity_resolution.src.pairing import (
+        build_probabilities_by_s1,
+    )
+    return build_probabilities_by_s1(oof, payload["s1_id"], payload["s2_s3_id"])
 
 
 def oracle_macro_f_beta(candidate_ids_by_s1, gt_dict) -> float:
