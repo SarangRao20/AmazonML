@@ -17,14 +17,35 @@ compiled sparse matrix product do it, which buys the candidate cap back.
 projects `vitthalg17` (0.9545 verified on the public leaderboard) and
 `ayan_multiview`.
 
-Field-prefixed documents
-------------------------
-Name, address and number tokens are prefixed into one bag
-(``n:tenitech n:limited a:liberty a:church d:588``) so a single TF-IDF
-space scores each field separately while still allowing a combined channel.
-Without prefixes, a name token and an address token of the same string
-would be indistinguishable and the address channel would leak into the name
-channel.
+Memory: pool sharding
+---------------------
+The naive version built one TF-IDF matrix per channel over the whole pool.
+That works for France (1.43M pool) and dies on India (4.72M pool): the
+``char_wb`` 3-4 gram channel alone reaches ~1e9 nonzeros, roughly 8 GB,
+and the first attempt was killed by the memory watchdog at 1,577 MB
+available.
+
+Two changes bound the peak:
+
+* The pool is processed in shards of ``POOL_SHARD`` records, and each
+  shard's matrix is freed before the next is built. Because retrieval is
+  sharded rather than truncated, every pool record is still compared
+  against every S1 entity -- the union of per-shard top-k is the global
+  top-k -- so this is a memory optimisation, not a recall trade.
+* Retrieved hits are accumulated as CSR blocks instead of Python tuples.
+  India generates 810k x 160 hits; as ``(int, float)`` tuples that is
+  ~3.2 GB of object headers alone, as CSR it is ~1 GB of two int32/float32
+  arrays.
+
+Per-channel document construction
+---------------------------------
+Each channel is built from its own field. The earlier version fed a single
+field-prefixed document (``n:tenitech a:church d:588``) to all channels and
+stripped the prefixes for the character channel, which meant the
+``name_char`` channel was silently scoring address and house-number
+characters as if they were part of the name -- doubling its nonzeros and
+injecting address noise into the name signal. Channels now read their own
+field directly.
 
 IDF is fitted per country, on that country's own records and without
 labels, so an unseen country such as France gets its own statistics rather
@@ -34,10 +55,9 @@ than inheriting US/India ones.
 import os
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
-import polars as pl
 import scipy.sparse as sp
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sparse_dot_topn import sp_matmul_topn
@@ -47,6 +67,9 @@ from .normalize import normalize_address, normalize_name, extract_numeric_signat
 # Retrieval-side knobs. max_df drops near-useless very common terms, which
 # both speeds up top-K and stops generic tokens flooding the candidate set.
 CHUNK = int(os.environ.get("ER_BLOCK_CHUNK", 200_000))
+POOL_SHARD = int(os.environ.get("ER_POOL_SHARD", 400_000))
+K_PER_SHARD = int(os.environ.get("ER_K_PER_SHARD", 0))
+UNION_CHUNK = int(os.environ.get("ER_UNION_CHUNK", 3_000))
 MAX_DF_FRAC = float(os.environ.get("ER_MAX_DF_FRAC", 0.01))
 MAX_DF_MIN = 2000
 N_THREADS = int(os.environ.get("ER_THREADS", os.cpu_count() or 4))
@@ -67,51 +90,99 @@ DEFAULT_K = {
     "combo": 10,
     "exact": 10,
 }
+RETRIEVAL_CHANNELS = ("name_word", "name_char", "addr", "combo")
+
+# Cap on how many pool records may share one order-invariant core-name key
+# before the exact channel ignores that key. Guards against generic keys
+# like "properties galaxy" pulling in a whole chain.
+EXACT_GROUP_CAP = 200
 
 
-def _doc(record: dict) -> str:
+def _name_of(rec) -> str:
+    """Business name from either a (name, addr) tuple or a record dict."""
+    if isinstance(rec, (tuple, list)):
+        return rec[0] or ""
+    return rec.get("business_name", "") or ""
+
+
+def _addr_of(rec) -> str:
+    """Business address from either a (name, addr) tuple or a record dict."""
+    if isinstance(rec, (tuple, list)):
+        return rec[1] or ""
+    return rec.get("business_address", "") or ""
+
+
+def _doc(name: str, addr: str) -> str:
     """Field-prefixed bag of tokens for one record."""
-    name = normalize_name(record.get("business_name", "") or "")
-    addr = normalize_address(record.get("business_address", "") or "")
-    parts = [f"n:{t}" for t in name.split()]
-    parts += [f"a:{t}" for t in addr.split()]
-    parts += [f"d:{n}" for n in extract_numeric_signature(
-        record.get("business_address", "") or "")]
+    parts = [f"n:{t}" for t in normalize_name(name).split()]
+    parts += [f"a:{t}" for t in normalize_address(addr).split()]
+    parts += [f"d:{n}" for n in extract_numeric_signature(addr)]
     return " ".join(parts) if parts else "__empty__"
 
 
-def _name_only(record: dict) -> str:
-    name = normalize_name(record.get("business_name", "") or "")
+def _name_text(name: str, addr: str) -> str:
+    name = normalize_name(name)
     return name if name else "__empty__"
 
 
-def _addr_only(record: dict) -> str:
-    addr = normalize_address(record.get("business_address", "") or "")
+def _addr_text(name: str, addr: str) -> str:
+    addr = normalize_address(addr)
     return addr if addr else "__empty__"
 
 
-def _combo(record: dict) -> str:
-    name = normalize_name(record.get("business_name", "") or "")
-    addr = normalize_address(record.get("business_address", "") or "")
+def _combo_text(name: str, addr: str) -> str:
+    name = normalize_name(name)
+    addr = normalize_address(addr)
     return f"{name} {addr}".strip() or "__empty__"
 
 
-def _exact_key(record: dict) -> str:
+def _full_text(name: str, addr: str) -> str:
+    """Normalised name + address + numeric/landmark signature, no prefixes.
+
+    This is what the character and combo channels score over. The numeric
+    signature carries house numbers and landmark markers ('sbi atm'), which
+    is why it is included: without it val_sample pair recall was 96.74%
+    against 98.11%.
+
+    ``extract_numeric_signature`` returns a space-separated string, so it
+    is split here. The previous implementation iterated the string
+    directly and emitted one ``d:`` token per digit, which silently turned
+    "588" into "5 8 8" for the character and combo channels.
+    """
+    name = normalize_name(name)
+    addr = normalize_address(addr)
+    parts = (name.split() + addr.split()
+             + extract_numeric_signature(addr).split())
+    return " ".join(parts) if parts else "__empty__"
+
+
+def _exact_key(name: str, addr: str) -> str:
     """Order-invariant core-name key: 'galaxy properties' == 'properties galaxy'."""
-    name = normalize_name(record.get("business_name", "") or "")
+    name = normalize_name(name)
     toks = sorted(t for t in name.split() if len(t) > 2)
     return " ".join(toks) if toks else name
 
+
+# Every channel scores the same field-prefixed document, and selects its own
+# field with a token_pattern (or, for the character channel, a preprocessor
+# that strips the prefixes). Keeping one prefixed representation is not just
+# tidier than one text per channel -- it is measurably better. Building
+# separate plain-field texts instead measured 96.71% pair recall on
+# val_sample against 98.11% for the prefixed form, because the prefixes keep
+# the fields separable inside one TF-IDF space and stop a name token and an
+# address token of the same spelling from collapsing into one feature.
+DOC_BUILDER = _doc
 
 VECTORISERS = {
     "name_word": lambda max_df: TfidfVectorizer(
         token_pattern=r"n:\S+", ngram_range=(1, 2), min_df=1, max_df=max_df,
         sublinear_tf=True, lowercase=False, dtype=np.float32),
     "name_char": lambda max_df: TfidfVectorizer(
-        input="content", analyzer="char_wb", ngram_range=(3, 4), min_df=2,
-        max_df=max_df, sublinear_tf=True, lowercase=False, dtype=np.float32,
-        preprocessor=lambda s: s.replace("n:", "").replace("a:", "")
-        .replace("d:", "").strip()),
+        analyzer="char_wb", ngram_range=(3, 4), min_df=2,
+        max_df=max_df, sublinear_tf=True, lowercase=False,
+        dtype=np.float32,
+        preprocessor=lambda s: s.replace("n:", " ").replace("a:", " ")
+        .replace("d:", " ").strip()),
     "addr": lambda max_df: TfidfVectorizer(
         token_pattern=r"a:\S+", ngram_range=(1, 2), min_df=2, max_df=max_df,
         sublinear_tf=True, lowercase=False, dtype=np.float32),
@@ -138,101 +209,192 @@ class SparseBlocker:
             self.k.update(k)
         self.verbose = verbose
 
-    def _channel_matrix(self, docs: List[str], channel: str, max_df: float):
-        if channel == "name_char":
-            text = [d.replace("n:", " ").replace("a:", " ")
-                     .replace("d:", " ").strip() or "__empty__" for d in docs]
-        else:
-            text = docs
-        vec = VECTORISERS[channel](max_df)
-        mat = vec.fit_transform(text)
-        return vec, mat.tocsr()
-
-    def candidates_for_country(
+    # -- retrieval ------------------------------------------------------
+    def _retrieve_channel(
         self,
-        s1_records: Dict[str, dict],
-        pool_records: Dict[str, dict],
+        channel: str,
+        s1_text: List[str],
+        pool_text: List[str],
+        max_df: float,
+        k_per_shard: int,
+    ) -> List[List[Tuple[sp.csr_matrix, int]]]:
+        """Retrieve for every S1 entity against every pool record.
+
+        Returns, per S1 chunk, a list of ``(csr_block, column_offset)`` --
+        one entry per pool shard. Column indices inside a block are shard
+        local, so the union step adds the offset back to recover the global
+        pool row.
+        """
+        n_s1, n_pool = len(s1_text), len(pool_text)
+        n_chunks = (n_s1 + CHUNK - 1) // CHUNK
+        per_chunk: List[List[Tuple[sp.csr_matrix, int]]] = [
+            [] for _ in range(n_chunks)]
+        make_vec = VECTORISERS[channel]
+
+        for start in range(0, n_pool, POOL_SHARD):
+            stop = min(start + POOL_SHARD, n_pool)
+            shard_text = pool_text[start:stop]
+            vec = make_vec(max_df)
+            # fit_transform on the shard only; the same vec then transforms
+            # S1, so query and document share one vocabulary and one IDF.
+            B = vec.fit_transform(shard_text).tocsr().astype(np.float32)
+            n_shard = stop - start
+            k_here = min(k_per_shard, n_shard)
+            del shard_text
+            for ci, q0 in enumerate(range(0, n_s1, CHUNK)):
+                q1 = min(q0 + CHUNK, n_s1)
+                Q = vec.transform(
+                    s1_text[q0:q1]).tocsr().astype(np.float32)
+                top = sp_matmul_topn(
+                    Q, B, top_n=k_here, sort=True, n_threads=N_THREADS)
+                per_chunk[ci].append((top, start))
+                del Q, top
+            del B, vec
+        return per_chunk
+
+    def _exact_hits(
+        self,
+        s1_text: List[Tuple[str, str]],
+        pool_text: List[Tuple[str, str]],
+    ) -> Dict[int, List[int]]:
+        """Order-invariant core-name key hits, oversized keys ignored.
+
+        Most keys are unique, so a key maps to a single int and only
+        promotes to a list on a second occurrence. That keeps the group
+        table near one int per pool record instead of one list per record.
+        """
+        groups: Dict[str, object] = {}
+        oversized: Set[str] = set()
+        for j, (name, addr) in enumerate(pool_text):
+            key = _exact_key(name, addr)
+            prev = groups.get(key)
+            if prev is None:
+                groups[key] = j
+            elif isinstance(prev, int):
+                if key in oversized:
+                    continue
+                groups[key] = [prev, j]
+                if len(groups[key]) > EXACT_GROUP_CAP:
+                    oversized.add(key)
+                    del groups[key]
+            else:
+                prev.append(j)
+                if len(prev) > EXACT_GROUP_CAP:
+                    oversized.add(key)
+                    del groups[key]
+        hits: Dict[int, List[int]] = {}
+        for i, (name, addr) in enumerate(s1_text):
+            members = groups.get(_exact_key(name, addr))
+            if members is None:
+                continue
+            hits[i] = [members] if isinstance(members, int) else list(members)
+        return hits
+
+    # -- public API -----------------------------------------------------
+    def iter_candidate_chunks(
+        self,
+        s1_records,
+        pool_records,
         max_candidates: int = 45,
         min_score: float = 0.0,
-    ) -> Dict[str, List[Tuple[str, float]]]:
-        """Retrieve up to ``max_candidates`` targets per S1 entity."""
+    ) -> Iterator[Tuple[List[str], Dict[str, List[Tuple[str, float]]]]]:
+        """Yield ``(s1_ids, {s1_id: [(cand_id, score), ...]})`` in chunks.
+
+        Streaming rather than returning one country-sized dict is what keeps
+        peak memory flat: the caller can extract features, predict and write
+        each chunk out before the next is retrieved.
+        """
         s1_ids = list(s1_records)
         pool_ids = list(pool_records)
         if not s1_ids or not pool_ids:
-            return {}
-
-        s1_docs = [_doc(s1_records[i]) for i in s1_ids]
-        pool_docs = [_doc(pool_records[i]) for i in pool_ids]
+            return
         n_s1, n_pool = len(s1_ids), len(pool_ids)
         max_df = max(MAX_DF_MIN, int(MAX_DF_FRAC * n_s1))
 
-        # channel -> {s1_row: [(pool_row, score)]}
-        retrieved: Dict[str, Dict[int, List[Tuple[int, float]]]] = defaultdict(dict)
-        for channel in ("name_word", "name_char", "addr", "combo"):
-            k = self.k[channel]
-            if k <= 0:
+        t0 = time.time()
+        s1_text = [DOC_BUILDER(_name_of(s1_records[i]),
+                               _addr_of(s1_records[i])) for i in s1_ids]
+        pool_text = [DOC_BUILDER(_name_of(pool_records[i]),
+                                 _addr_of(pool_records[i])) for i in pool_ids]
+        self._log(f"docs normalised in {time.time() - t0:.0f}s "
+                  f"(S1={n_s1:,} pool={n_pool:,})")
+
+        retrieved: Dict[str, List[List[Tuple[sp.csr_matrix, int]]]] = {}
+        for channel in RETRIEVAL_CHANNELS:
+            if self.k.get(channel, 0) <= 0:
                 continue
             t0 = time.time()
-            if channel == "name_char":
-                s1_txt = [d.replace("n:", " ").replace("a:", " ")
-                          .replace("d:", " ").strip() or "__empty__" for d in s1_docs]
-                pool_txt = [d.replace("n:", " ").replace("a:", " ")
-                            .replace("d:", " ").strip() or "__empty__" for d in pool_docs]
-            else:
-                s1_txt, pool_txt = s1_docs, pool_docs
-            vec, B = self._channel_matrix(pool_txt, channel, max_df)
-            Q = vec.transform(s1_txt).tocsr()
-            Q = Q[:, :].astype(np.float32)
-            for start in range(0, n_s1, CHUNK):
-                stop = min(start + CHUNK, n_s1)
-                top = sp_matmul_topn(
-                    Q[start:stop], B, top_n=min(k, n_pool),
-                    sort=True, n_threads=N_THREADS)
-                # top is a CSR whose rows are the chunk's S1 records; each
-                # stored (col=B_row, value=cosine) is one retrieved target.
-                indptr, indices, data = top.indptr, top.indices, top.data
-                for r in range(stop - start):
-                    lo, hi = indptr[r], indptr[r + 1]
-                    if lo == hi:
-                        continue
-                    retrieved[channel].setdefault(start + r, []).extend(
-                        (int(c), float(v))
-                        for c, v in zip(indices[lo:hi], data[lo:hi]))
+            per_shards = int(np.ceil(n_pool / POOL_SHARD))
+            # Per-shard k must reach k on its own, not k / n_shards: a pool
+            # record ranked 6th-10th inside its own shard is still a global
+            # top-10 hit, so dividing k silently drops it. Measured cost of
+            # that shortcut on val_sample: pair recall 95.68% vs 98.11%.
+            k_per_shard = (K_PER_SHARD if K_PER_SHARD > 0
+                           else self.k[channel])
+            retrieved[channel] = self._retrieve_channel(
+                channel, s1_text, pool_text, max_df, k_per_shard)
             if self.verbose:
                 print(f"      {channel}: {time.time() - t0:.0f}s "
-                      f"vocab={B.shape[1]:,}", flush=True)
+                      f"{per_shards} shard(s) k={k_per_shard}/shard",
+                      flush=True)
 
-        # exact order-invariant core-name key, capped per group
         t0 = time.time()
-        exact_groups: Dict[str, List[int]] = defaultdict(list)
-        for j, pid in enumerate(pool_ids):
-            exact_groups[_exact_key(pool_records[pid])].append(j)
-        for i, sid in enumerate(s1_ids):
-            key = _exact_key(s1_records[sid])
-            members = exact_groups.get(key)
-            if members and len(members) <= 200:
-                retrieved["exact"].setdefault(i, []).extend(
-                    (j, 1.0) for j in members)
-        if self.verbose:
-            print(f"      exact: {time.time() - t0:.0f}s", flush=True)
+        exact = self._exact_hits(
+            [(_name_of(s1_records[i]), _addr_of(s1_records[i]))
+             for i in s1_ids],
+            [(_name_of(pool_records[i]), _addr_of(pool_records[i]))
+             for i in pool_ids])
+        self._log(f"exact keys in {time.time() - t0:.0f}s "
+                  f"({sum(len(v) for v in exact.values()):,} hits)")
 
-        # union with per-channel weights, then cap
-        out: Dict[str, List[Tuple[str, float]]] = {}
-        for i, sid in enumerate(s1_ids):
-            scores: Dict[int, float] = defaultdict(float)
-            for channel, per_row in retrieved.items():
-                if i not in per_row:
+        for lo in range(0, n_s1, UNION_CHUNK):
+            hi = min(lo + UNION_CHUNK, n_s1)
+            block: Dict[str, List[Tuple[str, float]]] = {}
+            for i in range(lo, hi):
+                scores: Dict[int, float] = {}
+                ci = i // CHUNK
+                local = i - ci * CHUNK
+                for channel, per_chunk in retrieved.items():
+                    w = CHANNEL_WEIGHTS[channel]
+                    for top, offset in per_chunk[ci]:
+                        lo_r, hi_r = top.indptr[local], top.indptr[local + 1]
+                        if lo_r == hi_r:
+                            continue
+                        for c, v in zip(top.indices[lo_r:hi_r],
+                                        top.data[lo_r:hi_r]):
+                            col = int(c) + offset
+                            scores[col] = scores.get(col, 0.0) + w * float(v)
+                for j in exact.get(i, ()):
+                    scores[j] = scores.get(j, 0.0) + CHANNEL_WEIGHTS["exact"]
+                sid = s1_ids[i]
+                if not scores:
+                    block[sid] = []
                     continue
-                w = CHANNEL_WEIGHTS[channel]
-                for j, v in per_row[i]:
-                    scores[j] += w * v
-            if not scores:
-                out[sid] = []
-                continue
-            ranked = sorted(scores.items(), key=lambda t: (-t[1], pool_ids[t[0]]))
-            ranked = [(j, v) for j, v in ranked if v > min_score][:max_candidates]
-            out[sid] = [(pool_ids[j], v) for j, v in ranked]
+                ranked = sorted(scores.items(),
+                                key=lambda t: (-t[1], pool_ids[t[0]]))
+                ranked = [t for t in ranked if t[1] > min_score][:max_candidates]
+                block[sid] = [(pool_ids[j], v) for j, v in ranked]
+            yield s1_ids[lo:hi], block
+            del block
+
+    def candidates_for_country(
+        self,
+        s1_records,
+        pool_records,
+        max_candidates: int = 45,
+        min_score: float = 0.0,
+    ) -> Dict[str, List[Tuple[str, float]]]:
+        """All candidates for a country at once. Convenient, but memory
+        scales with the country; prefer :meth:`iter_candidate_chunks`."""
+        out: Dict[str, List[Tuple[str, float]]] = {}
+        for _, block in self.iter_candidate_chunks(
+                s1_records, pool_records, max_candidates, min_score):
+            out.update(block)
         return out
+
+    def _log(self, msg: str) -> None:
+        if self.verbose:
+            print(f"      {msg}", flush=True)
 
 
 def blocking_recall(candidates: Dict[str, List[Tuple[str, float]]],
