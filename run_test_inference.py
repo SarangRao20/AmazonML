@@ -78,6 +78,7 @@ MAX_PER_S1 = 11
 # that is 1.3M dicts, which is what drove available RAM to 1130 MB and
 # tripped the watchdog. 3,000 S1 keeps a chunk near 100k pairs.
 S1_CHUNK = int(os.environ.get("ER_S1_CHUNK", 3_000))
+SCORE_KEEP = int(os.environ.get("ER_SCORE_KEEP", 20))
 
 
 def log(msg: str) -> None:
@@ -187,6 +188,17 @@ def main() -> int:
         log(f"[{ci}/{len(countries)}] {country}: S1={a.height:,} "
             f"S2/S3={b.height:,}")
 
+        # Score side-file. Writing the per-candidate probabilities once
+        # turns the decision rule from baked-into-the-run into a parameter
+        # that can be re-applied in seconds. France is the reason: it is
+        # the unseen country, it predicts 6.57 matches per entity against
+        # a train prior of 3.46, and F0.5 = 5R/(4P + T) makes that cost
+        # roughly 0.50 against 0.87 at the prior. Re-deriving that by
+        # re-running inference would be 37 minutes per threshold guess.
+        # Only the top SCORE_KEEP per entity are stored: the cap is
+        # MAX_PER_S1, so nothing beyond that can ever be kept.
+        score_fh = open(part_dir / f"{country}.scores.tsv", "w", encoding="utf-8")
+        score_fh.write("source1_entity_id\tcandidate_entity_id\tprobability\n")
         part_m = part_dir / f"{country}.matching.tsv"
         part_c = part_dir / f"{country}.candidates.tsv"
         part_done = part_dir / f"{country}.done"
@@ -219,7 +231,7 @@ def main() -> int:
             for sid in s1_records:
                 match_fh.write(f"{sid}\t\n")
                 cand_fh.write(f"{sid}\t\n")
-            match_fh.close(); cand_fh.close()
+            match_fh.close(); cand_fh.close(); score_fh.close()
             part_done.write_text("empty pool\n")
             log(f"    no pool records for {country}, wrote {a.height:,} empty rows")
             continue
@@ -262,6 +274,8 @@ def main() -> int:
                     continue
                 ranked = sorted(cands, key=lambda t: (-t[1], t[0]))
                 best = ranked[0][1]
+                for cid, p in ranked[:SCORE_KEEP]:
+                    score_fh.write(f"{sid}\t{cid}\t{p:.6f}\n")
 
                 if best < args.margin_tau:
                     kept = []
@@ -290,6 +304,7 @@ def main() -> int:
 
         match_fh.close()
         cand_fh.close()
+        score_fh.close()
         part_done.write_text(f"{n_done} S1, {n_pairs} pairs\n")
         done_countries.append(country)
         log(f"    {country} done: {n_done:,} S1, {n_pairs:,} pairs, "
