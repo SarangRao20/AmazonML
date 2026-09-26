@@ -71,6 +71,11 @@ def main() -> int:
     ap.add_argument("--val-sample", action="store_true",
                     help="Train on the small val_sample split instead of full train")
     ap.add_argument("--out", type=Path, default=MODELS_DIR)
+    ap.add_argument("--compare-models", type=Path, default=None,
+                    help="Score the incumbent model dir on this run's OOF rows")
+    ap.add_argument("--verdict-file", type=Path,
+                    default=Path("logs/retrain_verdict.txt"),
+                    help="Where to write NEW WINS / INCUMBENT WINS for the runner")
     ap.add_argument("--max-candidates", type=int, default=45,
                     help="recall ceiling; 45 reaches 98.4%% pair recall "
                          "on val_sample vs 95.2%% at 35")
@@ -163,6 +168,12 @@ def main() -> int:
         for ids, chunk in stream:
             feats_part = extract_features_from_records(
                 chunk, s1_view, pool_view, phase=2, verbose=False)
+            # Cast per chunk, not after the concat: at ~8M pairs the parts
+            # list plus a float64 concat peaks around 8 GB. Casting as each
+            # chunk lands keeps the whole set near 1.8 GB.
+            feats_part = feats_part.astype(
+                {c: np.float32 for c in feats_part.columns
+                 if c not in ("s1_id", "s2_s3_id")})
             feat_parts.append(feats_part)
             n_pairs += sum(len(v) for v in chunk.values())
             for sid in ids:
@@ -234,6 +245,64 @@ def main() -> int:
     log(f"BEST rule={best['rule']} score={best['score_tau']} "
         f"margin={best['margin_tau']} alpha={best['alpha']} shift={best['shift']} "
         f"macro F0.5={best['macro_f_beta'] * 100:.4f}%")
+
+    # ---- incumbent comparison on identical rows ---------------------------
+    # Both models are scored on this run's OOF feature matrix and each gets
+    # its own best decision rule, so neither is handed a threshold tuned for
+    # the other. The comparison is deliberately conservative: the new
+    # model's numbers here are out-of-fold, while the incumbent was trained
+    # on a superset that includes some of these entities, so its score is
+    # flattered by in-sample exposure. New >= old despite that handicap is
+    # strong evidence, not a coin flip.
+    if args.compare_models:
+        old_dir = Path(args.compare_models)
+        if (old_dir / "xgboost_model.json").exists() or list(old_dir.glob("*")):
+            try:
+                old_model = TriEnsembleModel(verbose=False)
+                old_loaded = old_model.load_models(path=old_dir)
+                old_probs = old_model.predict_ensemble(
+                    X, old_loaded, use_calibration=True)
+                old_by_s1 = build_probabilities_by_s1(
+                    old_probs, feats["s1_id"].to_numpy(),
+                    feats["s2_s3_id"].to_numpy())
+                old_out = DecisionRuleOptimizer(beta=F_BETA).grid_search(
+                    old_by_s1, {k: v for k, v in gt_dict.items()
+                                if k in keep_set}, verbose=False)
+                log(f"INCUMBENT ({old_dir}) macro F0.5="
+                    f"{old_out['best']['macro_f_beta'] * 100:.4f}%  "
+                    f"rule={old_out['best']['rule']} "
+                    f"score={old_out['best']['score_tau']} "
+                    f"alpha={old_out['best']['alpha']}")
+                log(f"NEW model          macro F0.5="
+                    f"{best['macro_f_beta'] * 100:.4f}%  "
+                    f"rule={best['rule']} score={best['score_tau']} "
+                    f"alpha={best['alpha']}")
+                verdict = ("NEW WINS" if best["macro_f_beta"]
+                           >= old_out["best"]["macro_f_beta"] else "INCUMBENT WINS")
+                log(f"VERDICT: {verdict} (margin "
+                    f"{(best['macro_f_beta'] - old_out['best']['macro_f_beta']) * 100:+.4f} pts)")
+                with open(Path(args.verdict_file), "w", encoding="utf-8") as fh:
+                    fh.write(f"{verdict}\n")
+                    fh.write(f"new={best['macro_f_beta']:.6f}\n")
+                    fh.write(f"incumbent={old_out['best']['macro_f_beta']:.6f}\n")
+            except Exception as exc:  # comparison must never kill the run
+                log(f"incumbent comparison failed (non-fatal): "
+                    f"{type(exc).__name__}: {exc}")
+                xcols = list(X.columns) if hasattr(X, "columns") else []
+                log(f"  diag: X={type(X).__name__} feats={type(feats).__name__} "
+                    f"n_x_cols={len(xcols)} first5={xcols[:5]}")
+        else:
+            log(f"no incumbent models in {old_dir}, skipping comparison")
+
+    # Persist the winning rule beside the models so inference adopts the
+    # thresholds the model was actually calibrated against, instead of
+    # relying on run_test_inference's defaults still matching.
+    import json
+    args.out.mkdir(parents=True, exist_ok=True)
+    with open(args.out / "decision_rule.json", "w", encoding="utf-8") as fh:
+        json.dump({k: (float(v) if isinstance(v, (int, float)) else v)
+                   for k, v in best.items()}, fh, indent=2)
+    log(f"decision rule -> {args.out / 'decision_rule.json'}")
 
     payload = {
         "oof": oof,

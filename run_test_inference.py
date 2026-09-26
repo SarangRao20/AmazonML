@@ -102,10 +102,11 @@ def main() -> int:
                     help="recall ceiling; 45 -> 98.4%% pair recall")
     ap.add_argument("--blocker", choices=["sparse", "dict"],
                     default="sparse")
-    ap.add_argument("--score-tau", type=float, default=0.60)
-    ap.add_argument("--alpha", type=float, default=0.7,
+    ap.add_argument("--score-tau", type=float, default=None,
+                    help="default: read from <model-dir>/decision_rule.json")
+    ap.add_argument("--alpha", type=float, default=None,
                     help="Relative-floor coefficient; keep p >= max(score_tau, alpha*max_p)")
-    ap.add_argument("--margin-tau", type=float, default=0.01)
+    ap.add_argument("--margin-tau", type=float, default=None)
     ap.add_argument("--limit-countries", type=int, default=0,
                     help="Only process the first N countries (smoke test)")
     ap.add_argument("--limit-s1", type=int, default=0,
@@ -129,6 +130,32 @@ def main() -> int:
     s1_all, s2, s3 = load_test()
     all_s1_ids = s1_all["entity_id"].to_list()
     log(f"every one of {len(all_s1_ids):,} S1 entities must appear in the output")
+
+    # A model retrained on a different pool is calibrated against different
+    # thresholds, so prefer the rule it was actually tuned with over the
+    # defaults baked into this script.
+    rule_path = Path(args.model_dir) / "decision_rule.json"
+    if rule_path.exists():
+        import json
+        with open(rule_path, encoding="utf-8") as fh:
+            rule = json.load(fh)
+        if args.score_tau is None:
+            args.score_tau = float(rule.get("score_tau", 0.60))
+        if args.alpha is None:
+            args.alpha = float(rule.get("alpha", 0.7))
+        if args.margin_tau is None:
+            args.margin_tau = float(rule.get("margin_tau", 0.01))
+        log(f"decision rule from {rule_path.name}: rule={rule.get('rule')} "
+            f"score_tau={args.score_tau} alpha={args.alpha} "
+            f"margin_tau={args.margin_tau} "
+            f"(train macro F0.5={float(rule.get('macro_f_beta', 0)) * 100:.4f}%)")
+    else:
+        args.score_tau = 0.60 if args.score_tau is None else args.score_tau
+        args.alpha = 0.7 if args.alpha is None else args.alpha
+        args.margin_tau = 0.01 if args.margin_tau is None else args.margin_tau
+        log(f"no decision_rule.json in {args.model_dir}; using defaults "
+            f"score_tau={args.score_tau} alpha={args.alpha} "
+            f"margin_tau={args.margin_tau}")
 
     log(f"loading models from {args.model_dir}")
     model = TriEnsembleModel(verbose=True)
