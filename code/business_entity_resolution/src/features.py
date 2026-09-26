@@ -38,6 +38,7 @@ except ImportError:
 
 from .config import FEATURE_NAMES, NUM_FEATURES, VERBOSE
 from .normalize import normalize_name, normalize_address, extract_numeric_signature
+from collections.abc import Mapping
 
 
 def get_char_ngrams(text: str, n: int = 3) -> set:
@@ -872,3 +873,37 @@ if __name__ == "__main__":
         print(f"  {feat_name:30s}: {feat_value:.4f}")
     
     print(f"\n✅ Feature extraction test completed!")
+
+
+class RecView(Mapping):
+    """Expose ``(name, address)`` tuples as record dicts, one at a time.
+
+    Pools are held as tuples rather than record dicts because a 4-key dict
+    per record costs ~400 bytes of headers alone, which at the test pool's
+    9.97M records is ~4 GB before any string data. The extractor wants
+    dicts, so this adapts on access rather than copying the pool into a
+    second dict-of-dicts.
+    """
+
+    __slots__ = ("_src",)
+
+    def __init__(self, src):
+        self._src = src
+
+    def __getitem__(self, key):
+        t = self._src[key]
+        return {"business_name": t[0] or "", "business_address": t[1] or ""}
+
+    def __iter__(self):
+        return iter(self._src)
+
+    def __len__(self):
+        return len(self._src)
+
+
+def fixed_chunks(mapping, size):
+    """Split a materialised candidate dict into ``size``-sized pieces."""
+    items = list(mapping.items())
+    for i in range(0, len(items), size):
+        block = dict(items[i:i + size])
+        yield list(block), block

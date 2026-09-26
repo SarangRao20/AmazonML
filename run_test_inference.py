@@ -40,6 +40,7 @@ Usage:
 """
 
 import argparse
+import gc
 import os
 import sys
 import time
@@ -59,6 +60,8 @@ from code.business_entity_resolution.src.config import (
 from code.business_entity_resolution.src.blocking import MultiChannelBlocker
 from code.business_entity_resolution.src.blocking_sparse import SparseBlocker
 from code.business_entity_resolution.src.features import (
+    RecView as _RecView,
+    fixed_chunks as _fixed_chunks,
     extract_features_from_records,
 )
 from code.business_entity_resolution.src.model import TriEnsembleModel
@@ -69,7 +72,12 @@ UNSEEN_COUNTRIES = {"FR", "fr", "France", "FRA"}
 FR_DELTA = 0.10
 # Maximum matches for one S1 entity in train_ground_truth.tsv.
 MAX_PER_S1 = 11
-S1_CHUNK = 40_000
+# Each candidate pair becomes a 53-key dict before being assembled into a
+# DataFrame, so a chunk of S1 entities costs roughly
+# len(chunk) * candidates_per_entity dicts. At 40,000 S1 x 32.5 candidates
+# that is 1.3M dicts, which is what drove available RAM to 1130 MB and
+# tripped the watchdog. 3,000 S1 keeps a chunk near 100k pairs.
+S1_CHUNK = int(os.environ.get("ER_S1_CHUNK", 3_000))
 
 
 def log(msg: str) -> None:
@@ -100,6 +108,10 @@ def main() -> int:
     ap.add_argument("--margin-tau", type=float, default=0.01)
     ap.add_argument("--limit-countries", type=int, default=0,
                     help="Only process the first N countries (smoke test)")
+    ap.add_argument("--limit-s1", type=int, default=0,
+                    help="Only block the first N S1 entities per country (smoke test)")
+    ap.add_argument("--force", action="store_true",
+                    help="Recompute countries that already have a .done marker")
     ap.add_argument("--no-guards", action="store_true",
                     help="Disable the France floor and per-S1 cap")
     args = ap.parse_args()
@@ -132,14 +144,13 @@ def main() -> int:
         countries = countries[: args.limit_countries]
         log(f"  limited to {countries}")
 
-    match_fh = open(match_path, "w", encoding="utf-8")
-    cand_fh = open(cand_path, "w", encoding="utf-8")
-    match_fh.write("source1_entity_id\tmatched_entity_ids\n")
-    cand_fh.write("source1_entity_id\tcandidate_entity_ids\n")
+    part_dir = out_dir / "parts"
+    part_dir.mkdir(parents=True, exist_ok=True)
 
     resolver = ConsistencyResolver(verbose=True)
     seen_s1 = set()
     t_start = time.time()
+    done_countries = []
 
     for ci, country in enumerate(countries, 1):
         t0 = time.time()
@@ -149,55 +160,72 @@ def main() -> int:
         log(f"[{ci}/{len(countries)}] {country}: S1={a.height:,} "
             f"S2/S3={b.height:,}")
 
-        s1_records = {r["entity_id"]: r for r in a.to_dicts()}
-        s23_records = {r["entity_id"]: r for r in b.to_dicts()}
+        part_m = part_dir / f"{country}.matching.tsv"
+        part_c = part_dir / f"{country}.candidates.tsv"
+        part_done = part_dir / f"{country}.done"
+        if part_done.exists() and not args.force:
+            log(f"    {country} already complete, skipping "
+                f"(delete {part_dir} to redo)")
+            done_countries.append(country)
+            seen_s1.update(a["entity_id"].to_list())
+            continue
+
+        # (name, address) tuples rather than record dicts. A 4-key dict per
+        # pool record costs roughly 400 bytes of headers alone, which at
+        # India's 4.72M pool is ~1.9 GB before any string data.
+        s1_records = {r["entity_id"]: (r["business_name"], r["business_address"])
+                      for r in a.iter_rows(named=True)}
+        s23_records = {r["entity_id"]: (r["business_name"], r["business_address"])
+                       for r in b.iter_rows(named=True)}
+        if args.limit_s1:
+            keep = set(list(s1_records)[: args.limit_s1])
+            s1_records = {k: v for k, v in s1_records.items() if k in keep}
+            log(f"    limited to {len(s1_records):,} S1 entities")
         seen_s1.update(s1_records)
+
+        match_fh = open(part_m, "w", encoding="utf-8")
+        cand_fh = open(part_c, "w", encoding="utf-8")
+        match_fh.write("source1_entity_id\tmatched_entity_ids\n")
+        cand_fh.write("source1_entity_id\tcandidate_entity_ids\n")
 
         if not s23_records:
             for sid in s1_records:
                 match_fh.write(f"{sid}\t\n")
                 cand_fh.write(f"{sid}\t\n")
+            match_fh.close(); cand_fh.close()
+            part_done.write_text("empty pool\n")
             log(f"    no pool records for {country}, wrote {a.height:,} empty rows")
             continue
 
         t_block = time.time()
-        if args.blocker == "sparse":
-            candidates = SparseBlocker(verbose=True).candidates_for_country(
-                s1_records, s23_records,
-                max_candidates=args.max_candidates or 45)
-        else:
-            candidates = MultiChannelBlocker(verbose=False).generate_all_candidates(
-                s1_records, s23_records)
-        n_pairs = sum(len(v) for v in candidates.values())
-        log(f"    blocking done in {time.time() - t_block:.0f}s: {n_pairs:,} pairs, "
-            f"{n_pairs / max(len(s1_records), 1):.1f}/S1")
+        n_pairs = 0
+        n_done = 0
+        if args.blocker != "sparse":
+            cands_all = MultiChannelBlocker(
+                verbose=False).generate_all_candidates(s1_records, s23_records)
+            log(f"    blocking done in {time.time() - t_block:.0f}s")
 
         # The cap matters more than it looks: it is the recall ceiling.
         # Reference project `ayan_multiview` measures union pair recall
         # 0.9905 at 112 candidates/S1 and 0.989 at 45/S1, so a cap of 12
         # knowingly gives up recall in exchange for finishing in minutes.
-        if args.max_candidates and args.max_candidates > 0:
-            before = n_pairs
-            for sid, cands in candidates.items():
-                if len(cands) > args.max_candidates:
-                    candidates[sid] = sorted(cands, key=lambda t: -t[1])[:args.max_candidates]
-            n_pairs = sum(len(v) for v in candidates.values())
-            if n_pairs != before:
-                log(f"    capped at {args.max_candidates}/S1: "
-                    f"{before:,} -> {n_pairs:,} pairs")
-
-        # ---- chunked scoring + incremental write --------------------------
-        items = list(candidates.items())
-        for start in range(0, len(items), S1_CHUNK):
-            chunk = dict(items[start:start + S1_CHUNK])
-            chunk_records = {sid: s1_records[sid] for sid in chunk}
+        cap = args.max_candidates or 45
+        blocker = SparseBlocker(verbose=True) if args.blocker == "sparse" else None
+        stream = (blocker.iter_candidate_chunks(s1_records, s23_records,
+                                                max_candidates=cap)
+                  if blocker is not None else
+                  iter(_fixed_chunks(cands_all, S1_CHUNK)))
+        for ci2, (chunk_ids, chunk) in enumerate(stream, 1):
+            t_chunk = time.time()
+            n_done += len(chunk_ids)
             feats = extract_features_from_records(
-                chunk, chunk_records, s23_records, phase=2, verbose=False)
+                chunk, _RecView(s1_records), _RecView(s23_records),
+                phase=2, verbose=False)
             X = feats.drop(columns=["s1_id", "s2_s3_id"], errors="ignore")
             probs = model.predict_ensemble(X, models, use_calibration=True)
 
             by_entity = {}
-            for (sid, cid), p in zip(feats["s1_id"], probs):
+            for sid, cid, p in zip(feats["s1_id"], feats["s2_s3_id"], probs):
                 by_entity.setdefault(sid, []).append((cid, float(p)))
 
             for sid, cands in by_entity.items():
@@ -226,17 +254,47 @@ def main() -> int:
                 cand_fh.write(
                     f"{sid}\t{','.join(sorted(c for c, _ in cands))}\n")
 
+            n_pairs += sum(len(v) for v in chunk.values())
             del feats, X, probs, by_entity, chunk
+            gc.collect()
+            if ci2 % 10 == 0:
+                log(f"      chunk {ci2}: {n_done:,}/{len(s1_records):,} S1, "
+                    f"{n_pairs:,} pairs, {time.time() - t_block:.0f}s elapsed")
 
-        # Release the country before touching the next one.
-        del s1_records, s23_records, candidates, a, b
-        log(f"    done in {time.time() - t0:.0f}s  "
+        match_fh.close()
+        cand_fh.close()
+        part_done.write_text(f"{n_done} S1, {n_pairs} pairs\n")
+        done_countries.append(country)
+        log(f"    {country} done: {n_done:,} S1, {n_pairs:,} pairs, "
+            f"{n_pairs / max(n_done, 1):.1f}/S1 in {time.time() - t0:.0f}s "
             f"(elapsed {(time.time() - t_start) / 60:.1f} min)")
 
-    match_fh.close()
-    cand_fh.close()
+        # Release the country before touching the next one.
+        del s1_records, s23_records, a, b
+        gc.collect()
 
-    missing = [sid for sid in all_s1_ids if sid not in seen_s1]
+    log(f"concatenating {len(done_countries)} country part file(s)")
+    with open(match_path, "w", encoding="utf-8") as m, \
+            open(cand_path, "w", encoding="utf-8") as c:
+        m.write("source1_entity_id\tmatched_entity_ids\n")
+        c.write("source1_entity_id\tcandidate_entity_ids\n")
+        for country in done_countries:
+            for src, dst in ((part_dir / f"{country}.matching.tsv", m),
+                             (part_dir / f"{country}.candidates.tsv", c)):
+                with open(src, encoding="utf-8") as fh:
+                    fh.readline()
+                    for line in fh:
+                        dst.write(line)
+
+    # Dedup while preserving order: the validator treats a repeated
+    # source1_entity_id row as an error, so a duplicated id in the input
+    # must not turn into a duplicated filler row.
+    seen_fill = set()
+    missing = []
+    for sid in all_s1_ids:
+        if sid not in seen_s1 and sid not in seen_fill:
+            seen_fill.add(sid)
+            missing.append(sid)
     log(f"rows written: {len(seen_s1):,}   missing S1: {len(missing):,}")
     if missing:
         log("  appending empty rows for the missing entities")

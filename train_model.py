@@ -17,6 +17,8 @@ Usage:
 """
 
 import argparse
+import gc
+import os
 import sys
 import time
 from collections import Counter
@@ -33,11 +35,9 @@ from code.business_entity_resolution.src.config import (
 )
 from code.business_entity_resolution.src.data_loader import DataLoader
 from code.business_entity_resolution.src.blocking import MultiChannelBlocker
-from code.business_entity_resolution.src.blocking_sparse import (
-    SparseBlocker, blocking_recall,
-)
+from code.business_entity_resolution.src.blocking_sparse import SparseBlocker
 from code.business_entity_resolution.src.features import (
-    extract_features_from_records,
+    RecView, extract_features_from_records, fixed_chunks,
 )
 from code.business_entity_resolution.src.model import TriEnsembleModel
 from code.business_entity_resolution.src.decision_rule import (
@@ -47,6 +47,21 @@ from code.business_entity_resolution.src.decision_rule import (
 
 def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def _iter_records(frame):
+    """Stream (country, entity_id, name, address) from a pandas frame.
+
+    Not to_dict("records"): on the 5.03M/5.29M-row pool frames that
+    materialises a list of five million dicts, roughly 2 GB of headers,
+    before the first blocking shard is built. to_numpy() on an object
+    column yields an array of references to the existing strings, so the
+    four columns together cost ~160 MB.
+    """
+    return zip(frame["country"].to_numpy(),
+               frame["entity_id"].to_numpy(),
+               frame["business_name"].to_numpy(),
+               frame["business_address"].to_numpy())
 
 
 def main() -> int:
@@ -62,6 +77,7 @@ def main() -> int:
     ap.add_argument("--blocker", choices=["sparse", "dict"],
                     default="sparse")
     args = ap.parse_args()
+    FEAT_CHUNK = int(os.environ.get("ER_TRAIN_CHUNK", 20_000))
 
     t_start = time.time()
     loader = DataLoader(use_val_sample=args.val_sample, verbose=True)
@@ -80,15 +96,17 @@ def main() -> int:
     if args.sample_frac >= 1.0:
         keep = list(gt_dict.keys())
     else:
-        # Keep every singleton (they are only 5.6% and they matter most),
-        # subsample the non-singletons, then restore the singleton rate by
-        # trimming the non-singletons to the same ratio.
-        n_keep_non = int(len(non) * args.sample_frac)
-        # match singleton share of the final sample to the full data
-        target_total = len(sing) + n_keep_non
-        n_sing = min(len(sing), int(round(target_total * full_singleton_rate)))
-        keep_sing = list(rng.choice(sing, size=n_sing, replace=False)) if n_sing < len(sing) else sing
-        keep_non = list(rng.choice(non, size=n_keep_non, replace=False))
+        # Subsample BOTH strata at the same rate. Keeping every singleton
+        # while subsampling only non-singletons silently over-represents
+        # them, and singletons are the easy negatives: at frac 0.01 that
+        # put 27.8% singletons in the sample against a 5.58% target, which
+        # shifts the prior the model calibrates its thresholds against.
+        n_keep_sing = int(round(len(sing) * args.sample_frac))
+        n_keep_non = int(round(len(non) * args.sample_frac))
+        keep_sing = (list(rng.choice(sing, size=n_keep_sing, replace=False))
+                     if n_keep_sing < len(sing) else sing)
+        keep_non = (list(rng.choice(non, size=n_keep_non, replace=False))
+                    if n_keep_non < len(non) else non)
         keep = keep_sing + keep_non
     keep_set = set(keep)
     rate = sum(1 for k in keep if not gt_dict[k]) / len(keep)
@@ -99,33 +117,81 @@ def main() -> int:
     s1_sub = s1[s1["entity_id"].isin(keep_set)]
     log(f"S1 frame: {s1_sub.shape[0]:,}")
 
-    # ---- blocking ---------------------------------------------------------
-    s1_records = {r["entity_id"]: r for r in s1_sub.to_dict("records")}
-    s2_records = {r["entity_id"]: r for r in s2.to_dict("records")}
-    s3_records = {r["entity_id"]: r for r in s3.to_dict("records")}
-    s23 = {**s2_records, **s3_records}
-    log(f"pool: {len(s23):,}")
+    # ---- blocking, per country and streamed -------------------------------
+    # Country partitioning is lossless: not one of the 7,638,365 ground-truth
+    # pairs crosses a country boundary, and it bounds peak memory at the
+    # largest single country instead of the whole 10.3M pool.
+    #
+    # Records are (name, address) tuples, not dicts. At 10.3M pool records
+    # the 4-key dict headers alone are ~4 GB.
+    #
+    # Blocking against the FULL per-country pool is deliberate: the 18
+    # channel/rank/density features are only calibrated if the candidate
+    # density during training matches test. val_sample's 518k pool is an
+    # order of magnitude smaller than India's 4.72M test pool, which left
+    # those features shifted.
+    s1_by_country: dict = {}
+    for country, eid, nm, ad in _iter_records(s1_sub):
+        s1_by_country.setdefault(country, {})[eid] = (nm, ad)
+    pool_by_country: dict = {}
+    for frame in (s2, s3):
+        for country, eid, nm, ad in _iter_records(frame):
+            pool_by_country.setdefault(country, {})[eid] = (nm, ad)
+    log(f"pool: {sum(len(v) for v in pool_by_country.values()):,} across "
+        f"{sorted(pool_by_country)}")
 
+    blocker = SparseBlocker(verbose=True) if args.blocker == "sparse" else None
+    feat_parts = []
+    n_pairs = 0
+    tot_true = tot_captured = n_non_single = n_full = 0
     t0 = time.time()
-    if args.blocker == "sparse":
-        # Sparse TF-IDF retrieval: 98.4% pair recall at 45 candidates/S1
-        # against 95.2% at 35 for the dict blocker, and faster.
-        candidates = SparseBlocker(verbose=True).candidates_for_country(
-            s1_records, s23, max_candidates=args.max_candidates)
-    else:
-        candidates = MultiChannelBlocker(verbose=True).generate_all_candidates(
-            s1_records, s23)
-    n_pairs = sum(len(v) for v in candidates.values())
-    log(f"candidates: {n_pairs:,} ({n_pairs / max(len(s1_records), 1):.1f}/S1) "
+    for country, s1_recs in sorted(s1_by_country.items()):
+        pool_recs = pool_by_country.get(country) or {}
+        log(f"  {country}: S1={len(s1_recs):,} pool={len(pool_recs):,}")
+        if not pool_recs:
+            log(f"    no pool records for {country}; "
+                f"{len(s1_recs):,} S1 entities get no candidates")
+            continue
+        if blocker is not None:
+            stream = blocker.iter_candidate_chunks(
+                s1_recs, pool_recs, max_candidates=args.max_candidates)
+        else:
+            cands = MultiChannelBlocker(
+                verbose=True).generate_all_candidates(s1_recs, pool_recs)
+            stream = fixed_chunks(cands, FEAT_CHUNK)
+        s1_view, pool_view = RecView(s1_recs), RecView(pool_recs)
+        for ids, chunk in stream:
+            feats_part = extract_features_from_records(
+                chunk, s1_view, pool_view, phase=2, verbose=False)
+            feat_parts.append(feats_part)
+            n_pairs += sum(len(v) for v in chunk.values())
+            for sid in ids:
+                truth = gt_dict.get(sid, set())
+                got = {c for c, _ in chunk.get(sid, [])}
+                tot_true += len(truth)
+                tot_captured += len(truth & got)
+                if truth:
+                    n_non_single += 1
+                    if truth.issubset(got):
+                        n_full += 1
+            del feats_part, chunk
+            gc.collect()
+        del s1_recs, pool_recs, s1_view, pool_view
+        gc.collect()
+    log(f"candidates: {n_pairs:,} ({n_pairs / max(len(s1_sub), 1):.1f}/S1) "
         f"in {time.time() - t0:.0f}s")
-    rc = blocking_recall(candidates, {k: v for k, v in gt_dict.items() if k in keep_set})
-    log(f"BLOCKING pair recall={rc['pair_recall'] * 100:.2f}%  "
-        f"entity full coverage={rc['entity_full_coverage'] * 100:.2f}%")
+    log(f"BLOCKING pair recall={tot_captured / max(tot_true, 1) * 100:.2f}%  "
+        f"entity full coverage={n_full / max(n_non_single, 1) * 100:.2f}%")
 
     # ---- features ---------------------------------------------------------
     t0 = time.time()
-    feats = extract_features_from_records(
-        candidates, s1_records, s23, phase=2, verbose=True)
+    feats = pd.concat(feat_parts, ignore_index=True)
+    del feat_parts
+    gc.collect()
+    # float32 halves both the frame and the DMatrix the boosters build from
+    # it; 8M+ pairs is where that difference stops being noise.
+    feats = feats.astype({c: np.float32 for c in feats.columns
+                          if c not in ("s1_id", "s2_s3_id")})
     labels = [
         1 if cid in gt_dict.get(sid, set()) else 0
         for sid, cid in zip(feats["s1_id"], feats["s2_s3_id"])
