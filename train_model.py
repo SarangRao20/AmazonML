@@ -138,12 +138,26 @@ def main() -> int:
     s1_by_country: dict = {}
     for country, eid, nm, ad in _iter_records(s1_sub):
         s1_by_country.setdefault(country, {})[eid] = (nm, ad)
-    pool_by_country: dict = {}
-    for frame in (s2, s3):
-        for country, eid, nm, ad in _iter_records(frame):
-            pool_by_country.setdefault(country, {})[eid] = (nm, ad)
-    log(f"pool: {sum(len(v) for v in pool_by_country.values()):,} across "
-        f"{sorted(pool_by_country)}")
+    log(f"S1 sample by country: "
+        f"{ {k: len(v) for k, v in sorted(s1_by_country.items())} }")
+    log(f"pool available: {s2.height + s3.height:,} rows across "
+        f"{sorted(set(s2['country'].unique()) | set(s3['country'].unique()))}")
+
+    # One country's pool at a time. Holding all 10.32M pool records as
+    # tuples up front is ~1.24 GB of headers alone, and none of it is
+    # needed while the other country is being blocked.
+    pool_cache: dict = {}
+
+    def pool_for(country: str) -> dict:
+        if country not in pool_cache:
+            d: dict = {}
+            for frame in (s2, s3):
+                sub = frame[frame["country"] == country]
+                for _c, eid, nm, ad in _iter_records(sub):
+                    d[eid] = (nm, ad)
+            pool_cache[country] = d
+            log(f"  loaded {country} pool: {len(d):,} records")
+        return pool_cache[country]
 
     blocker = SparseBlocker(verbose=True) if args.blocker == "sparse" else None
     feat_parts = []
@@ -151,7 +165,7 @@ def main() -> int:
     tot_true = tot_captured = n_non_single = n_full = 0
     t0 = time.time()
     for country, s1_recs in sorted(s1_by_country.items()):
-        pool_recs = pool_by_country.get(country) or {}
+        pool_recs = pool_for(country)
         log(f"  {country}: S1={len(s1_recs):,} pool={len(pool_recs):,}")
         if not pool_recs:
             log(f"    no pool records for {country}; "
@@ -187,6 +201,7 @@ def main() -> int:
                         n_full += 1
             del feats_part, chunk
             gc.collect()
+        pool_cache.pop(country, None)
         del s1_recs, pool_recs, s1_view, pool_view
         gc.collect()
     log(f"candidates: {n_pairs:,} ({n_pairs / max(len(s1_sub), 1):.1f}/S1) "

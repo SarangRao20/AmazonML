@@ -122,15 +122,15 @@ do_infer() {
   info "model: $model_dir   out: $out_dir"
   info "log: $log   (expect ~4.7 h for all three countries)"
   mkdir -p "$out_dir"
-  # --force: the .done markers are per-output-dir, but be explicit so a
-  # rerun after a partial failure recomputes rather than silently skipping.
+  # No --force: a country's <out>/parts/<country>.done marker makes a rerun
+  # resume instead of redoing finished countries, which is what lets a
+  # watchdog-killed run be restarted without paying for France again.
   $PY -u tools/run_guarded.py --min-avail-mb "$MAX_AVAIL_MB" --log "$log" --cwd . -- \
     $PY -u run_test_inference.py \
         --blocker "$BLOCKER" \
         --max-candidates "$CAP" \
         --model-dir "$model_dir" \
         --out "$out_dir" \
-        --force \
         2>&1 | tee "$LOGDIR/infer_$STAMP.tail"
   local rc=${PIPESTATUS[0]}
   [ "$rc" -eq 0 ] || die "inference exited $rc (see $log)"

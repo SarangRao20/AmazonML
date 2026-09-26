@@ -67,11 +67,36 @@ from .normalize import normalize_address, normalize_name, extract_numeric_signat
 # Retrieval-side knobs. max_df drops near-useless very common terms, which
 # both speeds up top-K and stops generic tokens flooding the candidate set.
 CHUNK = int(os.environ.get("ER_BLOCK_CHUNK", 200_000))
-POOL_SHARD = int(os.environ.get("ER_POOL_SHARD", 400_000))
+POOL_SHARD = int(os.environ.get("ER_POOL_SHARD", 1_000_000))
+# The char_wb 3-4 gram channel needs a much smaller shard than the word
+# channels. sklearn builds the FULL term vocabulary before pruning by
+# max_df, and on a 2M-document shard that vocabulary is tens of millions
+# of entries in a Python dict: measured 2.5 GB -> 6.1 GB and climbing on
+# India's 4.72M pool, versus a flat 2.5 GB at the 400k shard that
+# France completed in. The word channels are nowhere near that ceiling
+# (~30 nonzeros per document) and are cheaper with fewer, larger shards,
+# which also cuts the hits they retain (k per shard per S1).
+CHANNEL_POOL_SHARD = {
+    "name_char": int(os.environ.get("ER_POOL_SHARD_CHAR", 400_000)),
+}
 K_PER_SHARD = int(os.environ.get("ER_K_PER_SHARD", 0))
 UNION_CHUNK = int(os.environ.get("ER_UNION_CHUNK", 3_000))
 MAX_DF_FRAC = float(os.environ.get("ER_MAX_DF_FRAC", 0.01))
 MAX_DF_MIN = 2000
+# max_features bounds the vocabulary *while counting*. Without it sklearn
+# materialises every distinct term in a Python dict and only then applies
+# max_df, so the transient scales with vocabulary size rather than
+# document count. That transient is what actually exhausted RAM on
+# India's 4.72M pool: the process sat at 5.37 GB with name_word still
+# unfinished, on a channel whose own matrix is only ~240 MB.
+# Ceilings are set above the observed natural vocabularies (name_word
+# 699k, name_char 221k on a 518k pool) so little is actually dropped.
+MAX_FEATURES = {
+    "name_word": int(os.environ.get("ER_MAX_FEAT_WORD", 1_000_000)),
+    "name_char": int(os.environ.get("ER_MAX_FEAT_CHAR", 400_000)),
+    "addr": int(os.environ.get("ER_MAX_FEAT_ADDR", 600_000)),
+    "combo": int(os.environ.get("ER_MAX_FEAT_COMBO", 1_000_000)),
+}
 N_THREADS = int(os.environ.get("ER_THREADS", os.cpu_count() or 4))
 
 # weight per channel when unioning candidates; agreement across channels is
@@ -176,18 +201,22 @@ DOC_BUILDER = _doc
 VECTORISERS = {
     "name_word": lambda max_df: TfidfVectorizer(
         token_pattern=r"n:\S+", ngram_range=(1, 2), min_df=1, max_df=max_df,
+        max_features=MAX_FEATURES["name_word"],
         sublinear_tf=True, lowercase=False, dtype=np.float32),
     "name_char": lambda max_df: TfidfVectorizer(
         analyzer="char_wb", ngram_range=(3, 4), min_df=2,
-        max_df=max_df, sublinear_tf=True, lowercase=False,
+        max_df=max_df, max_features=MAX_FEATURES["name_char"],
+        sublinear_tf=True, lowercase=False,
         dtype=np.float32,
         preprocessor=lambda s: s.replace("n:", " ").replace("a:", " ")
         .replace("d:", " ").strip()),
     "addr": lambda max_df: TfidfVectorizer(
         token_pattern=r"a:\S+", ngram_range=(1, 2), min_df=2, max_df=max_df,
+        max_features=MAX_FEATURES["addr"],
         sublinear_tf=True, lowercase=False, dtype=np.float32),
     "combo": lambda max_df: TfidfVectorizer(
         token_pattern=r"\S+", ngram_range=(1, 1), min_df=1, max_df=max_df,
+        max_features=MAX_FEATURES["combo"],
         sublinear_tf=True, lowercase=False, dtype=np.float32),
 }
 
@@ -214,7 +243,8 @@ class SparseBlocker:
         self,
         channel: str,
         s1_text: List[str],
-        pool_text: List[str],
+        pool_records,
+        pool_ids: List[str],
         max_df: float,
         k_per_shard: int,
     ) -> List[List[Tuple[sp.csr_matrix, int]]]:
@@ -225,15 +255,22 @@ class SparseBlocker:
         local, so the union step adds the offset back to recover the global
         pool row.
         """
-        n_s1, n_pool = len(s1_text), len(pool_text)
+        n_s1, n_pool = len(s1_text), len(pool_ids)
         n_chunks = (n_s1 + CHUNK - 1) // CHUNK
         per_chunk: List[List[Tuple[sp.csr_matrix, int]]] = [
             [] for _ in range(n_chunks)]
         make_vec = VECTORISERS[channel]
 
-        for start in range(0, n_pool, POOL_SHARD):
-            stop = min(start + POOL_SHARD, n_pool)
-            shard_text = pool_text[start:stop]
+        shard_size = CHANNEL_POOL_SHARD.get(channel, POOL_SHARD)
+        for start in range(0, n_pool, shard_size):
+            stop = min(start + shard_size, n_pool)
+            # Documents are built per shard and dropped with it. Holding the
+            # whole pool's prefixed documents at once cost 1.24 GB on India's
+            # 4.13M records and was a third of the peak that tripped the
+            # watchdog.
+            shard_text = [DOC_BUILDER(_name_of(pool_records[pool_ids[j]]),
+                                     _addr_of(pool_records[pool_ids[j]]))
+                          for j in range(start, stop)]
             vec = make_vec(max_df)
             # fit_transform on the shard only; the same vec then transforms
             # S1, so query and document share one vocabulary and one IDF.
@@ -254,8 +291,10 @@ class SparseBlocker:
 
     def _exact_hits(
         self,
-        s1_text: List[Tuple[str, str]],
-        pool_text: List[Tuple[str, str]],
+        s1_records,
+        s1_ids: List[str],
+        pool_records,
+        pool_ids: List[str],
     ) -> Dict[int, List[int]]:
         """Order-invariant core-name key hits, oversized keys ignored.
 
@@ -265,8 +304,9 @@ class SparseBlocker:
         """
         groups: Dict[str, object] = {}
         oversized: Set[str] = set()
-        for j, (name, addr) in enumerate(pool_text):
-            key = _exact_key(name, addr)
+        for j, pid in enumerate(pool_ids):
+            key = _exact_key(_name_of(pool_records[pid]),
+                             _addr_of(pool_records[pid]))
             prev = groups.get(key)
             if prev is None:
                 groups[key] = j
@@ -283,8 +323,9 @@ class SparseBlocker:
                     oversized.add(key)
                     del groups[key]
         hits: Dict[int, List[int]] = {}
-        for i, (name, addr) in enumerate(s1_text):
-            members = groups.get(_exact_key(name, addr))
+        for i, sid in enumerate(s1_ids):
+            members = groups.get(_exact_key(_name_of(s1_records[sid]),
+                                            _addr_of(s1_records[sid])))
             if members is None:
                 continue
             hits[i] = [members] if isinstance(members, int) else list(members)
@@ -312,11 +353,11 @@ class SparseBlocker:
         max_df = max(MAX_DF_MIN, int(MAX_DF_FRAC * n_s1))
 
         t0 = time.time()
+        # Only the S1 side is materialised: it is the small side, and it is
+        # needed by every channel. The pool side is built per shard.
         s1_text = [DOC_BUILDER(_name_of(s1_records[i]),
                                _addr_of(s1_records[i])) for i in s1_ids]
-        pool_text = [DOC_BUILDER(_name_of(pool_records[i]),
-                                 _addr_of(pool_records[i])) for i in pool_ids]
-        self._log(f"docs normalised in {time.time() - t0:.0f}s "
+        self._log(f"S1 docs normalised in {time.time() - t0:.0f}s "
                   f"(S1={n_s1:,} pool={n_pool:,})")
 
         retrieved: Dict[str, List[List[Tuple[sp.csr_matrix, int]]]] = {}
@@ -324,7 +365,8 @@ class SparseBlocker:
             if self.k.get(channel, 0) <= 0:
                 continue
             t0 = time.time()
-            per_shards = int(np.ceil(n_pool / POOL_SHARD))
+            shard_size = CHANNEL_POOL_SHARD.get(channel, POOL_SHARD)
+            per_shards = int(np.ceil(n_pool / shard_size))
             # Per-shard k must reach k on its own, not k / n_shards: a pool
             # record ranked 6th-10th inside its own shard is still a global
             # top-10 hit, so dividing k silently drops it. Measured cost of
@@ -332,18 +374,14 @@ class SparseBlocker:
             k_per_shard = (K_PER_SHARD if K_PER_SHARD > 0
                            else self.k[channel])
             retrieved[channel] = self._retrieve_channel(
-                channel, s1_text, pool_text, max_df, k_per_shard)
+                channel, s1_text, pool_records, pool_ids, max_df, k_per_shard)
             if self.verbose:
                 print(f"      {channel}: {time.time() - t0:.0f}s "
                       f"{per_shards} shard(s) k={k_per_shard}/shard",
                       flush=True)
 
         t0 = time.time()
-        exact = self._exact_hits(
-            [(_name_of(s1_records[i]), _addr_of(s1_records[i]))
-             for i in s1_ids],
-            [(_name_of(pool_records[i]), _addr_of(pool_records[i]))
-             for i in pool_ids])
+        exact = self._exact_hits(s1_records, s1_ids, pool_records, pool_ids)
         self._log(f"exact keys in {time.time() - t0:.0f}s "
                   f"({sum(len(v) for v in exact.values()):,} hits)")
 
