@@ -73,3 +73,7 @@ references/
 # They are separate git repositories; adding them creates embedded-repo
 # entries in this index and nothing useful in a clone of this repo.
 references2/
+
+# Submission package: multi-hundred-MB, not source. Kept on disk for
+# upload, deliberately untracked -- GitHub rejects files over 100 MB.
+*.zip
