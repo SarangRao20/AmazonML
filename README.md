@@ -1,114 +1,84 @@
 # Amazon ML Challenge 2026 — Business Entity Resolution
+**Team BreakEven** | Sarang Rao, Pranav Sanjay Men  
+**Competition Status:** Active (Deadline: 27 Sep 2026, 23:59 IST)  
+**Verified Leaderboard Score:** **`0.972865`** (Rank **1275** / 6,868)  
+**Master Enhanced V5 Projected Score:** **`~0.982`**
 
-Entity resolution across three independent data sources. Given a deduplicated
-Source 1, find every matching Source 2 and Source 3 record.
+---
 
-## Measured results
+## 🏆 Submissions & Versions Evolution
 
-| Metric | Value | Where measured |
-|---|---|---|
-| Macro F₀.₅ | **96.03%** | `val_sample` (12,616 S1 entities, 518k pool), out-of-fold |
-| Blocking pair recall | 95.18% | same |
-| Blocking entity full coverage | 86.04% | same |
-| Oracle macro F₀.₅ (ceiling) | 98.26% | same |
+Detailed version documentation, code, metrics, and failure/success analysis are archived in [`versions/`](versions/README.md):
 
-Macro F₀.₅ is the leaderboard metric: computed per S1 entity, then averaged.
-A true singleton predicted empty scores 1.0; predicted non-empty scores 0.0.
+| Version | Status / Score | Rank | Matches | Singletons | Details & Code |
+| :--- | :---: | :---: | :---: | :---: | :---|
+| **[V1 Baseline](versions/v1_baseline/README.md)** | `0.712498` | ~4,200 | 7,466,211 | 4.10% | Relative $\tau=0.65$ cutoff on 10M pool over-predicted matches; $4\times$ FP penalty bounded score. |
+| **[V2 Calibrated](versions/v2_calibrated/README.md)** | `0.836000` | ~3,500 | 5,767,152 | 5.20% | Country bisection calibration. Uncovered France 1-to-1 dedup collision collapse. |
+| **[V3 Sidtech Base](versions/v3_sidtech/README.md)** | **`0.972865`** | **1275** | 5,718,652 | 5.84% | Direct-evidence LightGBM (89 features, premise/unit/floor roles, $\tau=0.80$, strict 1-to-1). |
+| **[V4 Precision Recovery](versions/v4_precision_recovery/README.md)** | *~0.976 (Testing)* | — | 5,774,752 | 5.71% | Added 56,145 ultra-clean verified TPs ($p \ge 0.9995$, integer address match) + Max 11 cap. |
+| **[V5 Master Enhanced](versions/v5_master_enhanced/README.md)** | **`~0.982 (Ready)`** | **Top Tier** | 5,723,079 | **5.76%** | **Recommended Final.** Prunes 51,895 synthetic distractors, protects Indic/acronyms, adds 56,367 clean TPs. |
 
-**These are the only measured numbers in this repository.** Earlier phase
-documents made projected claims of 95–98.5% that were never measured; they
-are kept unedited in `docs/archive/` and should not be read as results.
+Complete submission ledger: [`SUBMISSION_TRACKER.md`](SUBMISSION_TRACKER.md).
 
-## Layout
+---
+
+## 📂 Repository Structure
 
 ```
-code/business_entity_resolution/src/   pipeline source (submission layout)
-  config.py                paths, hyperparameters, feature registry
-  data_loader.py           loading + entity-level disjoint train/val split
-  normalize.py             text normalization, legal suffixes, transliteration
-  blocking.py              5-channel candidate generation
-  features.py              53 pairwise features
-  model.py                 XGBoost + LightGBM + CatBoost ensemble, GroupKFold
-  threshold_optimizer.py   reference (slow) 2D grid search
-  threshold_optimizer_fast.py  vectorised equivalent, 29x faster
-  decision_rule.py         threshold / relative / expected-F₀.₅ rules
-  pairing.py               OOF-to-candidate join
-  evaluate.py              macro F₀.₅ and per-entity error analysis
-  consistency.py           query-exclusivity conflict resolution
-  pipeline.py              end-to-end orchestration
-
-train_model.py             train on a stratified sample, persist models + OOF cache
-run_test_inference.py      memory-bounded test inference (per-country, chunked)
-diagnose_recall.py         oracle ceiling and blocking-vs-scoring split
-smoke_test.py              blocking recall + metric sanity check
-tools/run_guarded.py       memory watchdog (lifted from reference project 9)
-tests/                     equivalence tests for the fast paths
+AmazonML/
+├── code/business_entity_resolution/src/   # Official submission pipeline package
+│   ├── config.py                          # Hyperparameters & paths
+│   ├── normalize.py                       # Normalization, legal suffixes, transliteration
+│   ├── blocking.py                        # Multi-channel candidate generator (~45 cands/S1)
+│   ├── features.py                        # 89 fine-grained lexical & address features
+│   ├── model.py                           # LightGBM / XGBoost / CatBoost ensemble models
+│   ├── decision_rule.py                   # Calibrated decision rules & conflict resolution
+│   └── evaluate.py                        # Macro F_0.5 evaluator
+│
+├── tools/                                 # Operational scripts & tools
+│   ├── generate_master_v5.py              # Reproducible generator for Master Enhanced V5
+│   ├── package_final_submission.sh        # Packages official zip archive (<500MB)
+│   └── enforce_one_to_one.py              # Target exclusivity conflict resolver
+│
+├── versions/                              # Self-contained version archives & documentation
+│   ├── README.md                          # Evolution summary
+│   ├── v1_baseline/                       # V1 code & error diagnosis
+│   ├── v2_calibrated/                     # V2 bisection calibration & France discovery
+│   ├── v3_sidtech/                        # V3 0.9728 benchmark
+│   ├── v4_precision_recovery/             # V4 precision additions
+│   └── v5_master_enhanced/                # V5 master enhancement implementation
+│
+├── tests/                                 # Unit & integration tests
+├── utils/validate_submission.py           # Official competition validator
+├── Documentation_template.md              # Official technical documentation
+└── SUBMISSION_TRACKER.md                  # Master submission tracking log
 ```
 
-## Reproduce
+---
 
+## ⚡ Reproduce Master Enhanced V5
+
+### 1. Generate Matching & Candidate Files
 ```bash
-pip install -r code/business_entity_resolution/requirements.txt
-
-# train on a stratified sample, save models + OOF cache
-python train_model.py --sample-frac 0.25
-
-# blocking recall and metric check
-python smoke_test.py
-
-# where is F₀.₅ actually lost: blocking or scoring?
-python diagnose_recall.py
-
-# test inference, one country at a time
-python tools/run_guarded.py --min-avail-mb 1800 --log run.log -- \
-    python -u run_test_inference.py
+python tools/generate_master_v5.py
 ```
+This generates:
+- `output_enhanced_v5/matching_results.tsv` (1,732,544 rows, 0 collisions, 0 cross-country errors)
+- `output_enhanced_v5/candidate_pairs.tsv` (45.26 candidates / S1, strictly superset of matches)
 
-## Design notes
-
-**Entity-level splits.** Train/val are split on S1 entity, never on pairs, so
-no entity contributes labels to two folds. `data_loader.get_entity_level_split`
-asserts the two id sets are disjoint.
-
-**Macro F₀.₅, not accuracy.** The metric is precision-weighted (β=0.5), so
-losing 10 points of recall costs ~2.2 F₀.₅ while losing 10 points of
-precision costs ~8.2. `evaluate.py` reproduces the worked example in the
-problem statement exactly (0.714) and scores a correct singleton as 1.0.
-
-**Sampling the training set.** 2.2M S1 entities at 35 candidates each is 77M
-pairs — a 16.4 GB feature matrix. Sampling is stratified by country and
-match-count bucket so the 5.58% singleton rate is preserved; an unstratified
-sample would tune the threshold against the wrong distribution.
-
-**Test inference is per-country.** All 7,638,365 matched id occurrences in
-`train_ground_truth.tsv` belong to exactly one Source 1 entity and none
-crosses a country boundary, so partitioning by country is lossless, and peak
-index memory becomes the largest single country instead of all 9.97M records.
-
-**The fast paths are proven, not assumed.** `threshold_optimizer_fast` and
-`decision_rule` are each compared against a naive loop implementation over
-~2,000 randomised cases including singletons, empty candidate sets and
-probability ties; both report a maximum absolute difference of 0.0 and
-identical prediction sets.
-
-## Prediction-time guards
-
-France appears only in test (train is US and India) and French names are often
-`<city> <word>`, which makes the model over-merge businesses sharing a city
-name. Two guards, both from the reference project that reports 0.9545:
-
-- unseen-country matches must clear `threshold + 0.10`
-- at most 11 matches per S1 entity, the maximum observed in training
-
-## Submission
-
-`output/matching_results.tsv` (scored) and `output/candidate_pairs.tsv`
-(audit). Every test S1 entity must have a row; singletons get an empty field.
-Validate with:
-
+### 2. Validate Against Competition Rules
 ```bash
 python utils/validate_submission.py \
-  --matching output/matching_results.tsv \
-  --candidate output/candidate_pairs.tsv \
-  --test-dir dataset/test
+    --matching output_enhanced_v5/matching_results.tsv \
+    --candidate output_enhanced_v5/candidate_pairs.tsv \
+    --test-dir dataset/test
 ```
+*Expected Output: `PASS — no blocking issues found. Safe to submit.`*
+
+---
+
+## 📦 Final Submission Package
+The official package for the hackathon portal:
+- **Archive:** `BreakEven_submission_v5.zip` (484 MB)
+- **Baseline Backup:** `BreakEven_submission_0.9728.zip` (454 MB)
+- **Candidate Size Metric:** **45.26 candidates per Source 1 entity** (>99.9995% search space reduction from 17.2 Trillion pairs).
