@@ -14,7 +14,7 @@ Detailed version documentation, code, metrics, and failure/success analysis are 
 | :--- | :---: | :---: | :---: | :---: | :---|
 | **[V1 Baseline](versions/v1_baseline/README.md)** | `0.712498` | ~4,200 | 7,466,211 | 4.10% | Relative $\tau=0.65$ cutoff on 10M pool over-predicted matches; $4\times$ FP penalty bounded score. |
 | **[V2 Calibrated](versions/v2_calibrated/README.md)** | `0.836000` | ~3,500 | 5,767,152 | 5.20% | Country bisection calibration. Uncovered France 1-to-1 dedup collision collapse. |
-| **[V3 Sidtech Base](versions/v3_sidtech/README.md)** | **`0.972865`** | **1275** | 5,718,652 | 5.84% | Direct-evidence LightGBM (89 features, premise/unit/floor roles, $\tau=0.80$, strict 1-to-1). |
+| **[V3 Role-Decomposed](versions/v3_role_decomposition/README.md)** | **`0.972865`** | **1275** | 5,718,652 | 5.84% | Direct-evidence LightGBM (89 features, premise/unit/floor roles, $\tau=0.80$, strict 1-to-1). |
 | **[V4 Precision Recovery](versions/v4_precision_recovery/README.md)** | *~0.976 (Testing)* | — | 5,774,752 | 5.71% | Added 56,145 ultra-clean verified TPs ($p \ge 0.9995$, integer address match) + Max 11 cap. |
 | **[V5 Master Enhanced](versions/v5_master_enhanced/README.md)** | **`~0.982 (Ready)`** | **Top Tier** | 5,723,079 | **5.76%** | **Recommended Final.** Prunes 51,895 synthetic distractors, protects Indic/acronyms, adds 56,367 clean TPs. |
 
@@ -44,7 +44,7 @@ AmazonML/
 │   ├── README.md                          # Evolution summary
 │   ├── v1_baseline/                       # V1 code & error diagnosis
 │   ├── v2_calibrated/                     # V2 bisection calibration & France discovery
-│   ├── v3_sidtech/                        # V3 0.9728 benchmark
+│   ├── v3_role_decomposition/             # V3 0.9728 benchmark
 │   ├── v4_precision_recovery/             # V4 precision additions
 │   └── v5_master_enhanced/                # V5 master enhancement implementation
 │

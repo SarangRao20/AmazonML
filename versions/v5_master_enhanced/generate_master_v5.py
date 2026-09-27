@@ -3,7 +3,7 @@ Generate Master Enhanced V5 for Amazon ML Challenge 2026.
 Author: Team BreakEven
 
 Enhancements implemented:
-1. Sidtech v3 base (verified LB 0.972865, Rank 1275).
+1. BreakEven V3 Role-Decomposed LightGBM base (verified LB 0.972865, Rank 1275).
 2. Filter ~51.9k pure synthetic distractors (scrambled names with extreme low similarity < 0.25).
 3. Strictly protect genuine multilingual/Indic transliterations and true company acronyms.
 4. Scan and add ~56.4k ultra-clean True Positives (p >= 0.9995 with matching address integers).
@@ -77,14 +77,14 @@ def run():
             return True
         return False
 
-    print("2. Loading Sidtech matches and filtering pure distractors...")
-    base_file = Path("output_sidtech_v3/matching_results.tsv")
+    print("2. Loading BreakEven V3 matches and filtering pure distractors...")
+    base_file = Path("output_v3_benchmark/matching_results.tsv")
     if not base_file.exists():
         print(f"Error: {base_file} not found. Please ensure baseline matches are in place.")
         return
 
-    sidtech_matches = {}
-    sidtech_claimed = set()
+    base_matches = {}
+    base_claimed = set()
     distractors_dropped = 0
 
     with open(base_file, "r", encoding="utf-8") as f:
@@ -93,7 +93,7 @@ def run():
             parts = line.strip().split("\t")
             sid = parts[0]
             if len(parts) <= 1 or not parts[1]:
-                sidtech_matches[sid] = []
+                base_matches[sid] = []
                 continue
 
             s1_n, s1_a, _ = s1_lookup.get(sid, ("", "", ""))
@@ -104,7 +104,7 @@ def run():
                 # Check if it's an Indic transliteration
                 if is_indic(mn) or is_indic(s1_n):
                     surviving.append(mid)
-                    sidtech_claimed.add(mid)
+                    base_claimed.add(mid)
                     continue
 
                 # Fuzzy token sort similarity
@@ -112,14 +112,14 @@ def run():
                 if sim < 25:
                     if is_acronym_match(str(s1_n), str(mn)):
                         surviving.append(mid)
-                        sidtech_claimed.add(mid)
+                        base_claimed.add(mid)
                     else:
                         distractors_dropped += 1
                 else:
                     surviving.append(mid)
-                    sidtech_claimed.add(mid)
+                    base_claimed.add(mid)
 
-            sidtech_matches[sid] = surviving
+            base_matches[sid] = surviving
 
     print(f"   Dropped {distractors_dropped:,} pure synthetic distractors!")
 
@@ -132,9 +132,9 @@ def run():
         with open(clean_tp_file, "r", encoding="utf-8") as f:
             for line in f:
                 sid, mid = line.strip().split("\t")
-                if mid in sidtech_claimed or mid in claimed_new:
+                if mid in base_claimed or mid in claimed_new:
                     continue
-                if len(sidtech_matches.get(sid, [])) + len(new_additions[sid]) >= 6:
+                if len(base_matches.get(sid, [])) + len(new_additions[sid]) >= 6:
                     continue
                 claimed_new.add(mid)
                 new_additions[sid].append(mid)
@@ -151,7 +151,7 @@ def run():
     with open(out_dir / "matching_results.tsv", "w", encoding="utf-8") as f:
         f.write("source1_entity_id\tmatched_entity_ids\n")
         for sid in s1_order:
-            matches = sidtech_matches.get(sid, []) + new_additions.get(sid, [])
+            matches = base_matches.get(sid, []) + new_additions.get(sid, [])
             if len(matches) > 11:
                 matches = matches[:11]
 
@@ -168,7 +168,7 @@ def run():
                 f.write(f"{sid}\t{','.join(matches)}\n")
 
     # Sync candidate pairs
-    cand_base = Path("output_sidtech_v3/candidate_pairs.tsv")
+    cand_base = Path("output_v3_benchmark/candidate_pairs.tsv")
     if cand_base.exists():
         print("5. Syncing candidate_pairs.tsv with matching_results.tsv...")
         with open(out_dir / "matching_results.tsv") as f_m, open(cand_base) as f_c:
@@ -199,7 +199,7 @@ def run():
     print(f"\n=== Master Enhanced V5 Summary ===")
     print(f"Total Rows:     {len(s1_order):,}")
     print(f"Total Matches:  {total_pairs:,} (Mean: {total_pairs/len(s1_order):.3f})")
-    print(f"Singletons:     {empty_count:,} ({empty_count/len(s1_order)*100:.2f}%)")
+    print(f"Singletons:     {empty_count:,} ({empty_count/len(s1_order)*100:.2f}%)\")
     print(f"Collisions:     {collisions}")
     print(f"Wrote {out_dir/'matching_results.tsv'}")
 

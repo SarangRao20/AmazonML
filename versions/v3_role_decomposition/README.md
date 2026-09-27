@@ -1,4 +1,4 @@
-# Version 3 — Direct-Evidence Role-Decomposed Pipeline (Sidtech Base)
+# Version 3 — Direct-Evidence Role-Decomposed Pipeline (Benchmark)
 
 - **Submission ID:** Submission #3 (Submitted 27 Sep 2026, 03:54 PM IST)
 - **Leaderboard Score ($F_{0.5}$):** **0.972865** (+0.1368 lift over V2)
