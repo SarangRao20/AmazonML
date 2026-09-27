@@ -1,0 +1,26 @@
+[06:20:46] RESTART #1 (feat=4 infer_chunk=12500 sample=50000 resume=thresholds+feats). Death site:
+[  2011.5s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[  2039.4s] India: 809,986 S1 vs pool 4,717,565
+  🔗 Building Channel 0 (exact core name)...
+[06:20:46] relaunched pid 59713
+[06:46:46] RESTART #2 (feat=4 infer_chunk=12500 sample=50000 resume=thresholds+feats). Death site:
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1523.0s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.7GB)
+[06:46:46] relaunched pid 69537
+[07:12:47] RESTART #3 (feat=4 infer_chunk=12500 sample=50000 resume=thresholds+feats). Death site:
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1469.9s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.8GB)
+[07:12:47] relaunched pid 79286
+[07:38:47] RESTART #4 (feat=4 infer_chunk=12500 sample=50000 resume=thresholds+feats). Death site:
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1467.1s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.8GB)
+[07:38:47] relaunched pid 89054
+[08:04:47] STOP: 4 restarts used, needs human. Last log:
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 1,435 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1460.7s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.8GB)

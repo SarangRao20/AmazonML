@@ -1,0 +1,405 @@
+✅ Config loaded from: /home/aayush/code/clg/AmazonML/code/business_entity_resolution/src/config.py
+   PROJECT_ROOT: /home/aayush/code/clg/AmazonML
+   DATA_DIR: /home/aayush/code/clg/AmazonML/dataset
+   PHASE: 2
+   NUM_FEATURES: 53 total (Phase 1: 17 + Phase 2 new: 34)
+     Phase 2 breakdown:
+       - Legal suffix: 2
+       - Composite: 7
+       - Postal: 4
+       - Landmark: 2
+       - Multi-channel (Task 4): 19
+   ENSEMBLE_WEIGHTS: {'xgboost': 0.4, 'lightgbm': 0.35, 'catboost': 0.25}
+
+📋 Phase 2 Features Enabled:
+   - Legal suffix: True
+   - Composite: True
+   - Postal hierarchical: True
+   - Landmark: True
+   - Multi-channel: True
+   - Global consistency (Stage 7): True
+   - Embedding blocking (optional): False
+[     3.2s] loading train files
+[     5.7s] s1=2,206,821 s2=5,034,616 s3=5,285,603
+[    16.5s] sampled 49,999 S1
+[    28.5s] sampled pool: 669,819 records
+
+🔗 Building 5-channel blocking indices (Phase 5 integration)...
+   ✓ Channel 0: Exact core name (NEW)
+   ✓ Channels 1-2: IDF-weighted with frequency suppression (NEW)
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 45,488 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 21,104 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 47,951 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 10,238 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 43,921 unique signatures
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 577,843 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 183,232 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 215,930 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 41,780 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 378,367 unique signatures
+
+📊 Blocking Recall Analysis:
+   Total true pairs: 172,759
+   Captured by blocker: 163,599
+   Recall: 94.70%
+   ⚠️  Target: ≥95% recall (if <95%, expand blocking!)
+[   337.3s] train blocking recall=94.70%
+[   341.4s] featurize: 49,999 S1 in 8 shards x4 workers (RSS 6.5GB)
+[   948.1s] featurize shard 1/8 done (RSS 6.6GB)
+[   948.1s] featurize shard 2/8 done (RSS 6.6GB)
+[   948.1s] featurize shard 3/8 done (RSS 6.6GB)
+[   956.8s] featurize shard 4/8 done (RSS 6.6GB)
+[  1427.8s] featurize shard 5/8 done (RSS 6.6GB)
+[  1484.5s] featurize shard 6/8 done (RSS 6.6GB)
+[  1484.5s] featurize shard 7/8 done (RSS 6.6GB)
+[  1492.0s] featurize shard 8/8 done (RSS 6.6GB)
+[  1501.1s] pairs=1,749,216 pos=163,599
+[  1504.6s] train features: 1,749,216 pairs
+[  1506.6s] training 3-fold tri-ensemble on 1,749,216 pairs
+
+📊 Training with 3-Fold GroupKFold...
+
+  Fold 1/3:
+     Train: 1,166,144 pairs, Val: 583,072 pairs
+  🚀 Training XGBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Best round: 299
+  🚀 Training LightGBM...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+[LightGBM] [Info] Number of positive: 109003, number of negative: 1057141
+[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.118261 seconds.
+You can set `force_col_wise=true` to remove the overhead.
+[LightGBM] [Info] Total Bins 5634
+[LightGBM] [Info] Number of data points in the train set: 1166144, number of used features: 35
+[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.093473 -> initscore=-2.271948
+[LightGBM] [Info] Start training from score -2.271948
+Training until validation scores don't improve for 50 rounds
+Did not meet early stopping. Best iteration is:
+[300]	valid_0's binary_logloss: 0.0145995
+     ✓ Trained
+  🚀 Training CatBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Trained
+     Calibrating XGBoost...
+     Calibrating LightGBM...
+     Calibrating CatBoost...
+
+  Fold 2/3:
+     Train: 1,166,144 pairs, Val: 583,072 pairs
+  🚀 Training XGBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Best round: 299
+  🚀 Training LightGBM...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+[LightGBM] [Info] Number of positive: 109125, number of negative: 1057019
+[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.161131 seconds.
+You can set `force_col_wise=true` to remove the overhead.
+[LightGBM] [Info] Total Bins 5635
+[LightGBM] [Info] Number of data points in the train set: 1166144, number of used features: 35
+[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.093578 -> initscore=-2.270714
+[LightGBM] [Info] Start training from score -2.270714
+Training until validation scores don't improve for 50 rounds
+Did not meet early stopping. Best iteration is:
+[300]	valid_0's binary_logloss: 0.0147345
+     ✓ Trained
+  🚀 Training CatBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Trained
+     Calibrating XGBoost...
+     Calibrating LightGBM...
+     Calibrating CatBoost...
+
+  Fold 3/3:
+     Train: 1,166,144 pairs, Val: 583,072 pairs
+  🚀 Training XGBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Best round: 299
+  🚀 Training LightGBM...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+[LightGBM] [Info] Number of positive: 109070, number of negative: 1057074
+[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.170417 seconds.
+You can set `force_col_wise=true` to remove the overhead.
+[LightGBM] [Info] Total Bins 5634
+[LightGBM] [Info] Number of data points in the train set: 1166144, number of used features: 35
+[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.093530 -> initscore=-2.271270
+[LightGBM] [Info] Start training from score -2.271270
+Training until validation scores don't improve for 50 rounds
+Did not meet early stopping. Best iteration is:
+[300]	valid_0's binary_logloss: 0.0145361
+     ✓ Trained
+  🚀 Training CatBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Trained
+     Calibrating XGBoost...
+     Calibrating LightGBM...
+     Calibrating CatBoost...
+
+  Training on full data for production...
+  🚀 Training XGBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Best round: 152
+  🚀 Training LightGBM...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+[LightGBM] [Info] Number of positive: 163599, number of negative: 1585617
+[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.203464 seconds.
+You can set `force_col_wise=true` to remove the overhead.
+[LightGBM] [Info] Total Bins 5634
+[LightGBM] [Info] Number of data points in the train set: 1749216, number of used features: 35
+[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.093527 -> initscore=-2.271311
+[LightGBM] [Info] Start training from score -2.271311
+Training until validation scores don't improve for 50 rounds
+Early stopping, best iteration is:
+[111]	valid_0's binary_logloss: 0.0151704
+     ✓ Trained
+  🚀 Training CatBoost...
+   Class weight: 4.67 (neg/pos ratio: 9.7)
+     ✓ Trained
+
+✅ Training complete! OOF predictions collected: 1,749,216
+
+💾 Saving models to /home/aayush/code/clg/AmazonML/models...
+✅ Models saved!
+[  1999.4s] BEST score=0.72 margin=0.05 macroF=95.64%
+[  2001.4s] thresholds: score=0.72 margin=0.05
+[  2011.5s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[  2039.4s] India: 809,986 S1 vs pool 4,717,565
+  🔗 Building Channel 0 (exact core name)...
+✅ Config loaded from: /home/aayush/code/clg/AmazonML/code/business_entity_resolution/src/config.py
+   PROJECT_ROOT: /home/aayush/code/clg/AmazonML
+   DATA_DIR: /home/aayush/code/clg/AmazonML/dataset
+   PHASE: 2
+   NUM_FEATURES: 53 total (Phase 1: 17 + Phase 2 new: 34)
+     Phase 2 breakdown:
+       - Legal suffix: 2
+       - Composite: 7
+       - Postal: 4
+       - Landmark: 2
+       - Multi-channel (Task 4): 19
+   ENSEMBLE_WEIGHTS: {'xgboost': 0.4, 'lightgbm': 0.35, 'catboost': 0.25}
+
+📋 Phase 2 Features Enabled:
+   - Legal suffix: True
+   - Composite: True
+   - Postal hierarchical: True
+   - Landmark: True
+   - Multi-channel: True
+   - Global consistency (Stage 7): True
+   - Embedding blocking (optional): False
+[     2.8s] thresholds exist, skipping train
+[     2.8s] thresholds: score=0.72 margin=0.05
+[     4.6s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[    28.3s] India: 809,986 S1 vs pool 4,717,565
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 3,336,330 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 525,989 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 424,237 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 43,067 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 896,468 unique signatures
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 11,626 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 6,296 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 20,029 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 1,435 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1523.0s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.7GB)
+✅ Config loaded from: /home/aayush/code/clg/AmazonML/code/business_entity_resolution/src/config.py
+   PROJECT_ROOT: /home/aayush/code/clg/AmazonML
+   DATA_DIR: /home/aayush/code/clg/AmazonML/dataset
+   PHASE: 2
+   NUM_FEATURES: 53 total (Phase 1: 17 + Phase 2 new: 34)
+     Phase 2 breakdown:
+       - Legal suffix: 2
+       - Composite: 7
+       - Postal: 4
+       - Landmark: 2
+       - Multi-channel (Task 4): 19
+   ENSEMBLE_WEIGHTS: {'xgboost': 0.4, 'lightgbm': 0.35, 'catboost': 0.25}
+
+📋 Phase 2 Features Enabled:
+   - Legal suffix: True
+   - Composite: True
+   - Postal hierarchical: True
+   - Landmark: True
+   - Multi-channel: True
+   - Global consistency (Stage 7): True
+   - Embedding blocking (optional): False
+[     2.6s] thresholds exist, skipping train
+[     2.6s] thresholds: score=0.72 margin=0.05
+[     4.4s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[    28.0s] India: 809,986 S1 vs pool 4,717,565
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 3,336,330 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 525,989 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 424,237 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 43,067 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 896,468 unique signatures
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 11,626 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 6,296 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 20,029 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 1,435 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1469.9s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.8GB)
+✅ Config loaded from: /home/aayush/code/clg/AmazonML/code/business_entity_resolution/src/config.py
+   PROJECT_ROOT: /home/aayush/code/clg/AmazonML
+   DATA_DIR: /home/aayush/code/clg/AmazonML/dataset
+   PHASE: 2
+   NUM_FEATURES: 53 total (Phase 1: 17 + Phase 2 new: 34)
+     Phase 2 breakdown:
+       - Legal suffix: 2
+       - Composite: 7
+       - Postal: 4
+       - Landmark: 2
+       - Multi-channel (Task 4): 19
+   ENSEMBLE_WEIGHTS: {'xgboost': 0.4, 'lightgbm': 0.35, 'catboost': 0.25}
+
+📋 Phase 2 Features Enabled:
+   - Legal suffix: True
+   - Composite: True
+   - Postal hierarchical: True
+   - Landmark: True
+   - Multi-channel: True
+   - Global consistency (Stage 7): True
+   - Embedding blocking (optional): False
+[     2.6s] thresholds exist, skipping train
+[     2.6s] thresholds: score=0.72 margin=0.05
+[     4.5s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[    28.0s] India: 809,986 S1 vs pool 4,717,565
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 3,336,330 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 525,989 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 424,237 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 43,067 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 896,468 unique signatures
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 11,626 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 6,296 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 20,029 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 1,435 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1467.1s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.8GB)
+✅ Config loaded from: /home/aayush/code/clg/AmazonML/code/business_entity_resolution/src/config.py
+   PROJECT_ROOT: /home/aayush/code/clg/AmazonML
+   DATA_DIR: /home/aayush/code/clg/AmazonML/dataset
+   PHASE: 2
+   NUM_FEATURES: 53 total (Phase 1: 17 + Phase 2 new: 34)
+     Phase 2 breakdown:
+       - Legal suffix: 2
+       - Composite: 7
+       - Postal: 4
+       - Landmark: 2
+       - Multi-channel (Task 4): 19
+   ENSEMBLE_WEIGHTS: {'xgboost': 0.4, 'lightgbm': 0.35, 'catboost': 0.25}
+
+📋 Phase 2 Features Enabled:
+   - Legal suffix: True
+   - Composite: True
+   - Postal hierarchical: True
+   - Landmark: True
+   - Multi-channel: True
+   - Global consistency (Stage 7): True
+   - Embedding blocking (optional): False
+[     2.5s] thresholds exist, skipping train
+[     2.5s] thresholds: score=0.72 margin=0.05
+[     4.4s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[    28.2s] India: 809,986 S1 vs pool 4,717,565
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 3,336,330 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 525,989 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 424,237 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 43,067 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 896,468 unique signatures
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 11,626 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 6,296 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 20,029 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 1,435 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
+[  1460.7s] featurize: 12,500 S1 in 8 shards x4 workers (RSS 6.8GB)
+✅ Config loaded from: /home/aayush/code/clg/AmazonML/code/business_entity_resolution/src/config.py
+   PROJECT_ROOT: /home/aayush/code/clg/AmazonML
+   DATA_DIR: /home/aayush/code/clg/AmazonML/dataset
+   PHASE: 2
+   NUM_FEATURES: 53 total (Phase 1: 17 + Phase 2 new: 34)
+     Phase 2 breakdown:
+       - Legal suffix: 2
+       - Composite: 7
+       - Postal: 4
+       - Landmark: 2
+       - Multi-channel (Task 4): 19
+   ENSEMBLE_WEIGHTS: {'xgboost': 0.4, 'lightgbm': 0.35, 'catboost': 0.25}
+
+📋 Phase 2 Features Enabled:
+   - Legal suffix: True
+   - Composite: True
+   - Postal hierarchical: True
+   - Landmark: True
+   - Multi-channel: True
+   - Global consistency (Stage 7): True
+   - Embedding blocking (optional): False
+[     3.0s] thresholds exist, skipping train
+[     3.0s] thresholds: score=0.72 margin=0.05
+[     5.1s] test s1=1,732,544 s2=4,887,273 s3=5,082,316
+[    30.7s] India: 809,986 S1
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 3,336,330 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 525,989 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 424,237 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 43,067 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 896,468 unique signatures
+  🔗 Building Channel 0 (exact core name)...
+     ✓ Built index with 11,626 unique core names
+  🔗 Building Channel 1 (name tokens)...
+     ✓ Built index with 6,296 unique tokens
+  🔗 Building Channel 2 (address tokens)...
+     ✓ Built index with 20,029 unique tokens
+  🔗 Building Channel 3 (street number + street name)...
+     ✓ Built index with 1,435 unique signatures
+  🔗 Building Channel 4 (postal code + distinctive)...
+     ✓ Built index with 9,863 unique signatures
