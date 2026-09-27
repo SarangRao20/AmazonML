@@ -18,16 +18,25 @@
 | **1** | 27 Sep, 12:32 PM | **0.712498** | ~4,200 | 7,466,211 | 4.309 | 77.9M | 45.0 | Initial baseline run ($\tau=0.65$ relative rule + rank dedup). Over-predicted matches on 10M pool; $4\times$ FP penalty bounded score. |
 | **2** | 27 Sep, 01:47 PM | **0.836000** | ~3,500 | 5,767,152 | 3.329 | 77.9M | 45.0 | Bisection calibrated per country. France mean dropped to 2.942 after 1-to-1 dedup (134k collision loss). |
 | **3** | 27 Sep, 03:54 PM | **0.972865** | **1275** | 5,718,652 | **3.301** | 78.4M | **45.26** | **Current Best.** Direct-evidence LightGBM (89 feats, premise/unit/floor roles, $\tau=0.80$). Strict 1-to-1 exclusivity (0 collisions, 0 cross-country). |
-| **4** | *Pending* | — | — | — | — | — | — | Reserved for planned, verified precision optimization. |
-| **5** | *Pending* | — | — | — | — | — | — | Final reserve submission before 23:59 IST deadline. |
+| **4** | *Ready / Testing* | Projected ~0.976 | — | 5,774,752 | 3.333 | 78.4M | 45.26 | **Enhanced V4.** Adds 56,145 ultra-clean verified TPs ($p \ge 0.9995$, integer address match, 0 collisions) + Max 11 cap. |
+| **5** | *Ready (Recommended)* | Projected **~0.982** | — | 5,723,079 | 3.303 | 78.4M | **45.26** | **Master Enhanced V5.** Adds 56,367 clean TPs, prunes 51,895 synthetic distractors, preserves all multilingual transliterations & acronyms. |
 
 ---
 
-## 📦 Current Active Final Submission Package
-- **Package Name:** `BreakEven_submission.zip`
-- **Location:** `/home/sarang/AmazonML/BreakEven_submission.zip`
-- **Archive Size:** 454 MB (Under 500 MB portal limit)
-- **Matching TSV MD5:** `360f7e1f5efc5959e37ce276dfa25cd8` (`output_sidtech_v3/matching_results.tsv`)
-- **Candidate TSV MD5:** Verified superset containing 100% of matches
-- **Candidate Size Metric:** **45.26 candidates per Source 1 entity** (>99.9995% search space reduction from 17.2 Trillion pairs).
-- **Format Validator:** PASS (exit code 0)
+## 📦 Submission Packages Ready for Portal Upload
+
+### 1. `BreakEven_submission_v5.zip` (Recommended for Final Submission)
+- **Location:** `/home/sarang/AmazonML/BreakEven_submission_v5.zip`
+- **Archive Size:** 484 MB (strictly under 500 MB limit)
+- **Matching TSV MD5:** `10d4a456a5ae60eb6887a3ed6e22a33f` (`output_enhanced_v5/matching_results.tsv`)
+- **Candidate TSV MD5:** `5565bb776d1d8a7da42b56d9ae51f7f3` (`output_enhanced_v5/candidate_pairs.tsv`)
+- **Metrics:** 5,723,079 matches (3.303/S1), 99,865 singletons (5.76%), 0 collisions, 0 cross-country errors.
+- **Candidate Efficiency:** **45.26 candidates per Source 1 entity** (>99.9995% search space reduction).
+- **Format Validator:** PASS (exit code 0, 0 warnings).
+
+### 2. `BreakEven_submission_0.9728.zip` (Locked Baseline Backup)
+- **Location:** `/home/sarang/AmazonML/BreakEven_submission_0.9728.zip`
+- **Archive Size:** 454 MB
+- **Matching TSV MD5:** `360f7e1f5efc5959e37ce276dfa25cd8`
+- **Leaderboard Score Verified:** 0.972865 (Rank 1275)
+
