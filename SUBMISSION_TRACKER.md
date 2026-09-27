@@ -17,9 +17,9 @@
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---|
 | **1** | 27 Sep, 12:32 PM | **0.712498** | ~4,200 | 7,466,211 | 4.309 | 77.9M | 45.0 | Initial baseline run ($\tau=0.65$ relative rule + rank dedup). Over-predicted matches on 10M pool; $4\times$ FP penalty bounded score. |
 | **2** | 27 Sep, 01:47 PM | **0.836000** | ~3,500 | 5,767,152 | 3.329 | 77.9M | 45.0 | Bisection calibrated per country. France mean dropped to 2.942 after 1-to-1 dedup (134k collision loss). |
-| **3** | 27 Sep, 03:54 PM | **0.972865** | **1275** | 5,718,652 | **3.301** | 78.4M | **45.26** | **Current Best.** Direct-evidence LightGBM (89 feats, premise/unit/floor roles, $\tau=0.80$). Strict 1-to-1 exclusivity (0 collisions, 0 cross-country). |
-| **4** | *Ready / Testing* | Projected ~0.976 | — | 5,774,752 | 3.333 | 78.4M | 45.26 | **Enhanced V4.** Adds 56,145 ultra-clean verified TPs ($p \ge 0.9995$, integer address match, 0 collisions) + Max 11 cap. |
-| **5** | *Ready (Recommended)* | Projected **~0.982** | — | 5,723,079 | 3.303 | 78.4M | **45.26** | **Master Enhanced V5.** Adds 56,367 clean TPs, prunes 51,895 synthetic distractors, preserves all multilingual transliterations & acronyms. |
+| **3** | 27 Sep, 03:54 PM | **0.972865** | **1275** | 5,718,652 | **3.301** | 78.4M | **45.26** | Direct-evidence LightGBM (89 feats, premise/unit/floor roles, $\tau=0.80$). Strict 1-to-1 exclusivity (0 collisions, 0 cross-country). |
+| **4** | 27 Sep, 06:22 PM | *Evaluating...* | *Pending* | 5,723,079 | 3.303 | 78.4M | **45.26** | **Master Enhanced V5 Submitted.** Adds 56,367 clean TPs, prunes 51,895 synthetic distractors, preserves all multilingual transliterations & acronyms. |
+| **5** | *Reserve* | — | — | — | — | — | — | **Final reserve submission** before 23:59 IST deadline. |
 
 ---
 
