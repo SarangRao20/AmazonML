@@ -1,0 +1,8 @@
+{
+  "rule": "relative",
+  "score_tau": 0.65,
+  "margin_tau": 0.01,
+  "alpha": 0.7,
+  "shift": null,
+  "macro_f_beta": 0.9669627110160669
+}
